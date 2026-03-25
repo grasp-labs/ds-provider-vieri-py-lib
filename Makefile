@@ -8,7 +8,7 @@
 SRC_DIR         ?= src
 TEST_DIR        ?= tests
 DOCS_DIR        ?= docs
-MODULE_NAME     ?= {{PYTHON_MODULE_NAME}}
+MODULE_NAME     ?= ds_provider_vieri_py_lib
 
 # Colors for terminal output
 BLUE := \033[0;34m

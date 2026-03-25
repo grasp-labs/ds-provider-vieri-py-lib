@@ -28,4 +28,4 @@ ignore = [
 "tests/**/*" = ["PLR2004", "S101", "ARG", "FBT"]
 
 [lint.isort]
-known-first-party = ["{{PYTHON_MODULE_NAME}}"]
+known-first-party = ["ds_provider_vieri_py_lib"]

@@ -1,6 +1,6 @@
 """
 **File:** ``test_version.py``
-**Region:** ``{{GITHUB_REPO}}``
+**Region:** ``ds-provider-vieri-py-lib``
 
 Description
 -----------
@@ -20,7 +20,7 @@ def test_import_package_and_version_is_string() -> None:
         None.
     """
 
-    pkg = importlib.import_module("{{PYTHON_MODULE_NAME}}")
+    pkg = importlib.import_module("ds_provider_vieri_py_lib")
 
     assert isinstance(pkg.__version__, str)
     assert pkg.__version__ != ""
