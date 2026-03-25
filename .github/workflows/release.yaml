@@ -84,7 +84,7 @@ jobs:
       DOMAIN: ds
       AWS_REGION: eu-north-1
       SERVICE_GROUP: packages
-      SERVICE_NAME: "{{PROJECT_NAME}}"
+      SERVICE_NAME: "ds-provider-vieri-py-lib"
       TABLE_NAME: ds-coordination-release-fragments-prod
 
     steps:

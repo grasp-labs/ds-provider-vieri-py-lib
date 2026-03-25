@@ -3,27 +3,26 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "{{PROJECT_NAME}}"
+name = "ds-provider-vieri-py-lib"
 version = "0.1.0"
 description = "A Python package from the DS library collection"
 dependencies = []
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE-APACHE"]
 keywords = ["ds", "python"]
 authors = [
-    {name = "{{AUTHOR_NAME}}", email = "{{AUTHOR_EMAIL}}"}
+    {name = "Grasp Labs AS", email = "hello@grasplabs.com"}
 ]
 maintainers = [
-    {name = "{{AUTHOR_NAME}}", email = "{{AUTHOR_EMAIL}}"}
+    {name = "Grasp Labs AS", email = "hello@grasplabs.com"}
 ]
 classifiers = [
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.9",
-  "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Operating System :: OS Independent",
   "Intended Audience :: Developers",
   "Topic :: Software Development :: Libraries :: Python Modules",
@@ -31,10 +30,10 @@ classifiers = [
 readme = "PyPI.md"
 
 [project.urls]
-Documentation = "https://grasp-labs.github.io/{{GITHUB_REPO}}/"
-Repository = "https://github.com/grasp-labs/{{GITHUB_REPO}}/"
-Issues = "https://github.com/grasp-labs/{{GITHUB_REPO}}/issues/"
-Changelog = "https://github.com/grasp-labs/{{GITHUB_REPO}}/releases"
+Documentation = "https://grasp-labs.github.io/ds-provider-vieri-py-lib/"
+Repository = "https://github.com/grasp-labs/ds-provider-vieri-py-lib/"
+Issues = "https://github.com/grasp-labs/ds-provider-vieri-py-lib/issues/"
+Changelog = "https://github.com/grasp-labs/ds-provider-vieri-py-lib/releases"
 
 [project.optional-dependencies]
 dev = [
@@ -66,7 +65,7 @@ docs = [
 include-package-data = true
 
 [tool.setuptools.package-data]
-{{PYTHON_MODULE_NAME}} = ["py.typed"]
+ds_provider_vieri_py_lib = ["py.typed"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

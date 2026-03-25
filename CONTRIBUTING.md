@@ -16,8 +16,8 @@ and standards for contributing to DS Python Library packages.
 2. **Clone your fork**:
 
    ```bash
-   git clone https://github.com/grasp-labs/{{GITHUB_REPO}}.git
-   cd {{GITHUB_REPO}}
+   git clone https://github.com/grasp-labs/ds-provider-vieri-py-lib.git
+   cd ds-provider-vieri-py-lib
    ```
 
 3. **Set up development environment**:
@@ -168,7 +168,7 @@ Description: Tests for example module
 """
 
 import pytest
-from {{PYTHON_MODULE_NAME}}.example import example_function
+from ds_provider_vieri_py_lib.example import example_function
 
 
 def test_example_function_basic() -> None:
