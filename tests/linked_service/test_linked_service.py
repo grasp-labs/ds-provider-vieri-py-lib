@@ -16,7 +16,7 @@ def test_vieri_linked_service_settings_headers():
 def test_vieri_linked_service_type():
     settings = VieriLinkedServiceSettings(host="https://vieri.example.com/api", subscription_key="test-key")
     service = VieriLinkedService(id=uuid.uuid4(), name="vieri-test", version="0.1.0", settings=settings)
-    assert service.type() is not None
+    assert service.type is not None
 
 
 def test_vieri_linked_service_test_connection():
