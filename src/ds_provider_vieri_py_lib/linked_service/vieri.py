@@ -63,9 +63,10 @@ class VieriLinkedService(HttpLinkedService[VieriLinkedServiceSettingsType], Gene
     settings: VieriLinkedServiceSettingsType
     """ The settings required to connect to the Vieri instance. This includes the base URL and subscription key. """
 
+    @property
     def type(self) -> ResourceType:  # type: ignore[override]
         """
-        Returns the resource type for this linked service.
+        Get the type of the linked service.
 
         Returns:
             ResourceType: The resource type for the Vieri linked service.
