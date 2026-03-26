@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "A Python package from the DS library collection"
 dependencies = [
     "ds-common-logger-py-lib>=0.1.0-alpha.6,<1.0.0",
-    "ds-protocol-http-py-lib>=0.1.0-beta.5,<1.0.0",
+    "ds-protocol-http-py-lib>=0.1.0-beta.6,<1.0.0",
 ]
 requires-python = ">=3.11"
 license = "Apache-2.0"
