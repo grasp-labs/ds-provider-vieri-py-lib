@@ -1,0 +1,17 @@
+package-name: Vieri
+name: vieri
+description: Vieri provider for the DS Business Workflow
+
+linked_service:
+  - name: vieri
+    type: ds.resource.linked-service.vieri
+    version: 1.0.0
+    description: Vieri linked service
+    class_name: ds_provider_vieri_py_lib.linked_service.vieri.VieriLinkedService
+
+dataset:
+  - name: vieri
+    type: ds.resource.dataset.vieri
+    version: 1.0.0
+    description: Vieri dataset
+    class_name: ds_provider_vieri_py_lib.dataset.vieri.VieriDataset

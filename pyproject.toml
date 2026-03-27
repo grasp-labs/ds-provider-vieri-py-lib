@@ -9,6 +9,8 @@ description = "A Python package from the DS library collection"
 dependencies = [
     "ds-common-logger-py-lib>=0.1.0-alpha.6,<1.0.0",
     "ds-protocol-http-py-lib>=0.1.0-beta.6,<1.0.0",
+    "ds-resource-plugin-py-lib>=0.1.0-rc.3,<1.0.0",
+    "pandas>=2.2.0,<3.0.0",
 ]
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -55,6 +57,7 @@ dev = [
     "sphinx-autoapi>=3.0.0",
     "sphinx-material>=0.0.35",
     "bandit>=1.7.0",
+    "pandas-stubs>=2.2.0.240218",
 ]
 test = [
     "pytest>=7.4.0",

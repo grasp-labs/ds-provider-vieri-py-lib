@@ -18,4 +18,5 @@ class ResourceType(StrEnum):
     Constants for VIERI provider.
     """
 
-    VIERI_LINKED_SERVICE = "ds.linked_service.vieri"
+    VIERI_LINKED_SERVICE = "ds.resource.linked_service.vieri"
+    VIERI_DATASET = "ds.resource.dataset.vieri"
