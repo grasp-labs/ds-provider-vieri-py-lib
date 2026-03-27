@@ -9,12 +9,24 @@ Vieri instance using client credentials.
 
 example usage:
     >>> from ds_provider_vieri_py_lib.linked_service import VieriLinkedService, VieriLinkedServiceSettings
+    >>> from uuid import UUID
     >>> settings = VieriLinkedServiceSettings(
-    ...     host="https://my-vieri-instance.com/api",
-    ...     subscription_key="my-subscription-key"
+    ...     host="https://api.vieri.com",
+    ...     subscription_key="your_subscription_key"
     ... )
-    >>> linked_service = VieriLinkedService(settings=settings)
+    >>> linked_service = VieriLinkedService(
+    ...     id=UUID("your-uuid-here"),
+            name="My Vieri Linked Service",
+            version="1.0.0",
+    ...     settings=settings
+    ... )
     >>> linked_service.test_connection()
+    >>> # For actual usage with persistent connection
+    >>> linked_service.connect()
+    >>> try:
+    ...     session = linked_service.session  # Use session for API calls
+    ... finally:
+    ...     linked_service.close()
 
 """
 
