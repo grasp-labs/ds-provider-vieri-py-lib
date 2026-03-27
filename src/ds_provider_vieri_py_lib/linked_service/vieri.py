@@ -40,9 +40,17 @@ class VieriLinkedServiceSettings(HttpLinkedServiceSettings):
     """
 
     host: str
+    """ The base URL for the Vieri API (required). """
+
     subscription_key: str
+    """ The subscription key for authentication (required). """
+
     auth_type: enums.AuthType = enums.AuthType.NO_AUTH
+    """ The authentication type for the linked service. For Vieri, this is set to NO_AUTH since we use a
+    subscription key in headers. """
+
     headers: dict[str, str] = field(init=False)
+    """ The headers to include in API requests, automatically populated with the subscription key. """
 
     def __post_init__(self) -> None:
         self.headers = {"Ocp-Apim-Subscription-Key": self.subscription_key, "Content-Type": "application/json"}
