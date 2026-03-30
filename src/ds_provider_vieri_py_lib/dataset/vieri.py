@@ -33,6 +33,7 @@ Example:
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Generic, TypeVar
 
 import pandas as pd
@@ -45,7 +46,7 @@ from ds_resource_plugin_py_lib.common.resource.errors import NotSupportedError
 from ds_resource_plugin_py_lib.common.serde.deserialize import PandasDeserializer
 from ds_resource_plugin_py_lib.common.serde.serialize import PandasSerializer
 
-from ..enums import ResourceType
+from ..enums import VIERI_DATETIME_FORMAT, ResourceType
 from ..linked_service.vieri import VieriLinkedService
 
 logger = Logger.get_logger(__name__, package=True)
@@ -126,8 +127,20 @@ class VieriDataset(
         modified_after = None
         if self.checkpoint and isinstance(self.checkpoint, dict) and self.checkpoint.get("modified_after"):
             modified_after = self.checkpoint["modified_after"]
+            # Try to parse and reformat to ensure correct format
+            if modified_after is not None:
+                try:
+                    modified_after = self.format_vieri_date(self.parse_vieri_date(modified_after))
+                except Exception as e:
+                    raise ReadError(f"Invalid date format for checkpoint.modified_after: {modified_after}") from e
         elif self.settings.modified_after is not None:
             modified_after = self.settings.modified_after
+            # Try to parse and reformat to ensure correct format
+            if modified_after is not None:
+                try:
+                    modified_after = self.format_vieri_date(self.parse_vieri_date(modified_after))
+                except Exception as e:
+                    raise ReadError(f"Invalid date format for settings.modified_after: {modified_after}") from e
         if modified_after is not None:
             params["modifiedAfter"] = modified_after
         try:
@@ -172,6 +185,14 @@ class VieriDataset(
         """Helper to update the checkpoint with the latest modified value."""
         if latest_modified is not None:
             self.checkpoint = {"modified_after": latest_modified}
+
+    def parse_vieri_date(self, date_str: str) -> datetime:
+        """Parse a Vieri date string to a datetime object."""
+        return datetime.strptime(date_str, VIERI_DATETIME_FORMAT)
+
+    def format_vieri_date(self, dt: datetime) -> str:
+        """Format a datetime object to a Vieri date string."""
+        return dt.strftime(VIERI_DATETIME_FORMAT)
 
     def create(self) -> None:
         """

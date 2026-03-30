@@ -12,6 +12,9 @@ Example:
 
 from enum import StrEnum
 
+# Vieri date format constan
+VIERI_DATETIME_FORMAT = "%Y-%m-%d"
+
 
 class ResourceType(StrEnum):
     """
