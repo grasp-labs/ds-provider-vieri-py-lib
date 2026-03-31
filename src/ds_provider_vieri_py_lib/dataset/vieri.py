@@ -72,7 +72,7 @@ class VieriDatasetSettings(DatasetSettings):
     """Offset for pagination. Optional."""
 
     modified_after: str | None = None
-    """ISO8601 string or datetime for incremental loads. Optional."""
+    """Vieri date string (YYYY-MM-DD) to filter results modified after this date. Optional."""
 
 
 VieriDatasetSettingsType = TypeVar(
