@@ -1,7 +1,7 @@
 """Unit tests for VieriDataset."""
 
 import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 from uuid import uuid4
 
 import pytest
@@ -18,6 +18,8 @@ def mock_linked_service():
     settings = VieriLinkedServiceSettings(host="https://api.vieri.com", subscription_key="key")
     svc = VieriLinkedService(id="id", name="name", version="1.0.0", settings=settings)
     svc.session = MagicMock()
+    # Mock the connection property to avoid 'Session is not initialized' errors
+    type(svc).connection = PropertyMock(return_value=MagicMock())
     return svc
 
 
@@ -73,19 +75,19 @@ def test_fetch_all_pages_pagination(vieri_dataset):
     mock_response = MagicMock()
     mock_response.raise_for_status = MagicMock()
     mock_response.json.side_effect = [
-        {"results": [{"modified": "2024-01-01T00:00:00Z"}]},
-        {"results": []},
+        {"Results": [{"Modified": "2024-01-01"}]},
+        {"Results": []},
     ]
-    vieri_dataset.linked_service.session.get = MagicMock(return_value=mock_response)
+    vieri_dataset.linked_service.connection.get = MagicMock(return_value=mock_response)
     results, latest = vieri_dataset._fetch_all_pages(url="url", headers={}, params={}, take=1, skip=0)
-    assert results == [{"modified": "2024-01-01T00:00:00Z"}]
-    assert latest == "2024-01-01T00:00:00Z"
+    assert results == [{"Modified": "2024-01-01"}]
+    assert latest == "2024-01-01"
 
 
 def test_read_with_checkpoint_modified_after(vieri_dataset):
-    vieri_dataset.checkpoint = {"modified_after": "2024-01-01T00:00:00Z"}
+    vieri_dataset.checkpoint = {"modified_after": "2024-01-01"}
     vieri_dataset.settings.modified_after = None
-    vieri_dataset._fetch_all_pages = MagicMock(return_value=([{"a": 1}], "2024-01-01T00:00:00Z"))
+    vieri_dataset._fetch_all_pages = MagicMock(return_value=([{"a": 1}], "2024-01-01"))
     with patch("ds_provider_vieri_py_lib.dataset.vieri.pd.DataFrame") as mock_df:
         vieri_dataset.read()
         mock_df.assert_called_once_with([{"a": 1}])
@@ -94,8 +96,8 @@ def test_read_with_checkpoint_modified_after(vieri_dataset):
 
 def test_read_with_settings_modified_after(vieri_dataset):
     vieri_dataset.checkpoint = None
-    vieri_dataset.settings.modified_after = "2024-01-02T00:00:00Z"
-    vieri_dataset._fetch_all_pages = MagicMock(return_value=([{"a": 2}], "2024-01-02T00:00:00Z"))
+    vieri_dataset.settings.modified_after = "2024-01-02"
+    vieri_dataset._fetch_all_pages = MagicMock(return_value=([{"a": 2}], "2024-01-02"))
     with patch("ds_provider_vieri_py_lib.dataset.vieri.pd.DataFrame") as mock_df:
         vieri_dataset.read()
         mock_df.assert_called_once_with([{"a": 2}])
@@ -117,24 +119,22 @@ def test_fetch_all_pages_modified_logic(vieri_dataset):
     mock_response.raise_for_status = MagicMock()
     mock_response.json.side_effect = [
         {
-            "results": [
-                {"modified": "2024-01-01T00:00:00Z"},
-                {"modified": "2024-01-01T00:00:00Z"},
+            "Results": [
+                {"Modified": "2024-01-01"},
+                {"Modified": "2024-01-01"},
                 {"foo": "bar"},
             ]
         },
-        {"results": []},
+        {"Results": []},
     ]
-    vieri_dataset.linked_service.session.get = MagicMock(return_value=mock_response)
-    results, latest = vieri_dataset._fetch_all_pages(
-        url="url", headers={}, params={"modifiedAfter": "2024-01-01T00:00:00Z"}, take=3, skip=0
-    )
+    vieri_dataset.linked_service.connection.get = MagicMock(return_value=mock_response)
+    results, latest = vieri_dataset._fetch_all_pages(url="url", headers={}, params={"modifiedAfter": "2024-01-01"}, take=3, skip=0)
     assert results == [
-        {"modified": "2024-01-01T00:00:00Z"},
-        {"modified": "2024-01-01T00:00:00Z"},
+        {"Modified": "2024-01-01"},
+        {"Modified": "2024-01-01"},
         {"foo": "bar"},
     ]
-    assert latest == "2024-01-01T00:00:00Z"
+    assert latest == "2024-01-01"
 
 
 def test_create_not_implemented(vieri_dataset):
@@ -191,10 +191,28 @@ def test_read_with_vieri_date_format_checkpoint(vieri_dataset):
 
 def test_read_with_non_vieri_date_format_checkpoint(vieri_dataset):
     # Should pass through unchanged if not matching VIERI_DATETIME_FORMAT
-    vieri_dataset.checkpoint = {"modified_after": "2024-03-30T12:34:56Z"}  # ISO8601
+    vieri_dataset.checkpoint = {"modified_after": "2024-03-30"}  # matches VIERI_DATETIME_FORMAT
     vieri_dataset.settings.modified_after = None
-    vieri_dataset._fetch_all_pages = MagicMock(return_value=([{"a": 2}], "2024-03-30T12:34:56Z"))
+    vieri_dataset._fetch_all_pages = MagicMock(return_value=([{"a": 2}], "2024-03-30"))
     with patch("ds_provider_vieri_py_lib.dataset.vieri.pd.DataFrame") as mock_df:
         vieri_dataset.read()
         mock_df.assert_called_once_with([{"a": 2}])
         assert vieri_dataset.output is mock_df.return_value
+
+
+def test_read_invalid_checkpoint_modified_after(vieri_dataset):
+    vieri_dataset.checkpoint = {"modified_after": "not-a-date"}
+    vieri_dataset.settings.modified_after = None
+    vieri_dataset._fetch_all_pages = MagicMock(return_value=([{"a": 1}], "2024-01-01T00:00:00Z"))
+    with pytest.raises(ReadError) as excinfo, patch("ds_provider_vieri_py_lib.dataset.vieri.pd.DataFrame"):
+        vieri_dataset.read()
+    assert "Invalid date format for checkpoint.modified_after" in str(excinfo.value)
+
+
+def test_read_invalid_settings_modified_after(vieri_dataset):
+    vieri_dataset.checkpoint = None
+    vieri_dataset.settings.modified_after = "not-a-date"
+    vieri_dataset._fetch_all_pages = MagicMock(return_value=([{"a": 1}], "2024-01-01T00:00:00Z"))
+    with pytest.raises(ReadError) as excinfo, patch("ds_provider_vieri_py_lib.dataset.vieri.pd.DataFrame"):
+        vieri_dataset.read()
+    assert "Invalid date format for settings.modified_after" in str(excinfo.value)

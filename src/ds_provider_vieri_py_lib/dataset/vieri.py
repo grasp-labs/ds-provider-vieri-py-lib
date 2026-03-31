@@ -46,7 +46,7 @@ from ds_resource_plugin_py_lib.common.resource.errors import NotSupportedError
 from ds_resource_plugin_py_lib.common.serde.deserialize import PandasDeserializer
 from ds_resource_plugin_py_lib.common.serde.serialize import PandasSerializer
 
-from ..enums import VIERI_DATETIME_FORMAT, ResourceType
+from ..enums import ResourceType
 from ..linked_service.vieri import VieriLinkedService
 
 logger = Logger.get_logger(__name__, package=True)
@@ -116,10 +116,7 @@ class VieriDataset(
         Raises:
             ReadError: If reading data fails.
         """
-        url = (
-            f"{self.linked_service.settings.host}/api/v1/owners/"
-            f"{self.settings.owner_id}/products/{self.settings.product_name}/data"
-        )
+        url = f"{self.linked_service.settings.host}/{self.settings.owner_id}/api/public/{self.settings.product_name}"
         headers = self.linked_service.settings.headers
         take = self.settings.take or 1000
         skip = self.settings.skip or 0
@@ -135,14 +132,13 @@ class VieriDataset(
                     raise ReadError(f"Invalid date format for checkpoint.modified_after: {modified_after}") from e
         elif self.settings.modified_after is not None:
             modified_after = self.settings.modified_after
-            # Try to parse and reformat to ensure correct format
-            if modified_after is not None:
+            if modified_after:
                 try:
                     modified_after = self.format_vieri_date(self.parse_vieri_date(modified_after))
                 except Exception as e:
                     raise ReadError(f"Invalid date format for settings.modified_after: {modified_after}") from e
         if modified_after is not None:
-            params["modifiedAfter"] = modified_after
+            params["ModifiedAfter"] = modified_after
         try:
             all_results, latest_modified = self._fetch_all_pages(url, headers, params, take, skip)
             self.output = pd.DataFrame(all_results)
@@ -160,20 +156,20 @@ class VieriDataset(
     ) -> tuple[list[dict[str, Any]], str | None]:
         """Helper to fetch all paginated results from the Vieri API."""
         all_results: list[dict[str, Any]] = []
-        latest_modified = params.get("modifiedAfter")
+        latest_modified = params.get("ModifiedAfter")
         while True:
             page_params = params.copy()
-            page_params["take"] = take
-            page_params["skip"] = skip
-            response = self.linked_service.session.get(url, headers=headers, params=page_params)  # type: ignore[attr-defined]
+            page_params["Take"] = take
+            page_params["Skip"] = skip
+            response = self.linked_service.connection.get(url, headers=headers, params=page_params)
             response.raise_for_status()
             data = response.json()
-            results = data["results"] if isinstance(data, dict) and "results" in data else data
+            results = data["Results"] if isinstance(data, dict) and "Results" in data else data
             if not results:
                 break
             all_results.extend(results)
             for row in results:
-                row_modified = row.get("modified", None)
+                row_modified = row.get("Modified", None)
                 if row_modified and (latest_modified is None or row_modified > latest_modified):
                     latest_modified = row_modified
             if len(results) < take:
@@ -187,12 +183,15 @@ class VieriDataset(
             self.checkpoint = {"modified_after": latest_modified}
 
     def parse_vieri_date(self, date_str: str) -> datetime:
-        """Parse a Vieri date string to a datetime object."""
-        return datetime.strptime(date_str, VIERI_DATETIME_FORMAT)
+        """Parse a Vieri date string (YYYY-MM-DD) to a datetime object. Strictly enforces format."""
+        try:
+            return datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError as e:
+            raise ValueError(f"Date must be in 'YYYY-MM-DD' format, got: {date_str}") from e
 
     def format_vieri_date(self, dt: datetime) -> str:
-        """Format a datetime object to a Vieri date string."""
-        return dt.strftime(VIERI_DATETIME_FORMAT)
+        """Format a datetime object to a Vieri date string (YYYY-MM-DD)."""
+        return dt.strftime("%Y-%m-%d")
 
     def create(self) -> None:
         """
