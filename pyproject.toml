@@ -74,7 +74,7 @@ docs = [
 include-package-data = true
 
 [tool.setuptools.package-data]
-ds_provider_vieri_py_lib = ["py.typed"]
+ds_provider_vieri_py_lib = ["py.typed", "resource.yaml"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -46,7 +46,7 @@ from ds_resource_plugin_py_lib.common.resource.errors import NotSupportedError
 from ds_resource_plugin_py_lib.common.serde.deserialize import PandasDeserializer
 from ds_resource_plugin_py_lib.common.serde.serialize import PandasSerializer
 
-from ..enums import ResourceType
+from ..enums import VIERI_DATETIME_FORMAT, ResourceType
 from ..linked_service.vieri import VieriLinkedService
 
 logger = Logger.get_logger(__name__, package=True)
@@ -126,9 +126,10 @@ class VieriDataset(
         )
         all_results: list[dict[str, Any]] = []
         last_offset: int = 0
+        final_page_count: int = 0  # Track count of final page for accurate checkpoint
 
         try:
-            url = f"{self.linked_service.settings.host}/v1/{self.settings.product_name}"
+            url = f"{self.linked_service.settings.host}/{self.settings.owner_id}/api/public/{self.settings.product_name}"
 
             # Build initial params considering checkpoint state
             params = self._build_request_params()
@@ -140,20 +141,44 @@ class VieriDataset(
                 response.raise_for_status()
 
                 data = response.json()
-                results = data["Results"] if isinstance(data, dict) and "Results" in data else data
+
+                # Validate response structure: expect dict with "Results" key containing a list
+                if not isinstance(data, dict):
+                    raise ReadError(
+                        message=f"Invalid Vieri API response: expected dict, got {type(data).__name__}",
+                        details={"response_type": type(data).__name__, "response": str(data)[:200]},
+                    )
+
+                if "Results" not in data:
+                    raise ReadError(
+                        message="Invalid Vieri API response: missing 'Results' key in response",
+                        details={"response_keys": list(data.keys()), "response": str(data)[:200]},
+                    )
+
+                results = data["Results"]
+
+                # Validate that Results is a list
+                if not isinstance(results, list):
+                    raise ReadError(
+                        message=f"Invalid Vieri API response: 'Results' is {type(results).__name__}, expected list",
+                        details={"results_type": type(results).__name__, "results": str(results)[:200]},
+                    )
 
                 if not results:
                     break
 
+                # Track count of records in this batch
+                batch_count = len(results)
                 all_results.extend(results)
                 last_offset = params.get("Skip", 0)
+                final_page_count = batch_count  # Update for checkpoint calculation
 
                 # Check if we got less results than requested (last page)
-                if len(results) < params.get("Take", 0):
+                if batch_count < params.get("Take", 0):
                     break
 
-                # Increment skip for next page
-                params["Skip"] = params.get("Skip", 0) + params.get("Take", self.settings.page_size)
+                # Increment skip for next page using actual count fetched
+                params["Skip"] = params.get("Skip", 0) + batch_count
 
         except ReadError:
             raise
@@ -167,7 +192,7 @@ class VieriDataset(
         finally:
             # Always populate output and checkpoint, even with partial results
             self.output = pd.DataFrame(all_results)
-            self._build_checkpoint(last_offset)
+            self._build_checkpoint(last_offset, final_page_count)
 
     def _build_request_params(self) -> dict[str, Any]:
         """
@@ -200,12 +225,16 @@ class VieriDataset(
         params: dict[str, Any] = {"Skip": skip, "Take": take}
 
         # Add ModifiedAfter filter if specified (from scope or checkpoint)
+        # Validate date format using parse_vieri_date
         if last_modified:
+            # Validate the date format is correct (raises ValueError if invalid)
+            self.parse_vieri_date(last_modified)
+            # Use validated date in parameters
             params["ModifiedAfter"] = last_modified
 
         return params
 
-    def _build_checkpoint(self, last_offset: int) -> None:
+    def _build_checkpoint(self, last_offset: int, final_page_count: int) -> None:
         """
         Build and set the checkpoint dict with pagination state.
 
@@ -213,6 +242,7 @@ class VieriDataset(
         on the next incremental load.
 
         :param last_offset: The last Skip offset value that was successfully fetched.
+        :param final_page_count: The actual number of records in the final batch (for accurate offset).
         """
         if not self.supports_checkpoint:
             return
@@ -224,8 +254,9 @@ class VieriDataset(
         # Get current params to preserve modifiers (like last_modified)
         current_params = self._build_request_params()
 
-        # Update offset for pagination persistence (this is the NEXT offset to resume from)
-        self.checkpoint["offset"] = last_offset + current_params.get("Take", self.settings.page_size)
+        # Update offset for pagination persistence using actual record count from final batch
+        # This prevents overshooting on partial/last pages
+        self.checkpoint["offset"] = last_offset + final_page_count
 
         # Preserve last_modified in checkpoint if it exists (for incremental resumption)
         if current_params.get("ModifiedAfter"):
@@ -240,13 +271,13 @@ class VieriDataset(
     def parse_vieri_date(self, date_str: str) -> datetime:
         """Parse a Vieri date string (YYYY-MM-DD) to a datetime object. Strictly enforces format."""
         try:
-            return datetime.strptime(date_str, "%Y-%m-%d")
+            return datetime.strptime(date_str, VIERI_DATETIME_FORMAT)
         except ValueError as e:
-            raise ValueError(f"Date must be in 'YYYY-MM-DD' format, got: {date_str}") from e
+            raise ValueError(f"Date must be in '{VIERI_DATETIME_FORMAT}' format, got: {date_str}") from e
 
     def format_vieri_date(self, dt: datetime) -> str:
         """Format a datetime object to a Vieri date string (YYYY-MM-DD)."""
-        return dt.strftime("%Y-%m-%d")
+        return dt.strftime(VIERI_DATETIME_FORMAT)
 
     def create(self) -> None:
         """

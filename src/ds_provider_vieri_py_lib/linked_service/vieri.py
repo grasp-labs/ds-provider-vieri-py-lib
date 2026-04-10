@@ -5,7 +5,7 @@
 Vieri Linked Service
 
 This module implements a linked service for Vieri, allowing users to connect to and interact with
-Vieri instance using client credentials.
+Vieri instance using a subscription key header for authentication.
 
 example usage:
     >>> from ds_provider_vieri_py_lib.linked_service import VieriLinkedService, VieriLinkedServiceSettings
@@ -33,12 +33,9 @@ example usage:
 from dataclasses import dataclass, field
 from typing import Generic, TypeVar
 
-from ds_common_logger_py_lib import Logger
 from ds_protocol_http_py_lib import HttpLinkedService, HttpLinkedServiceSettings, enums
 
 from ..enums import ResourceType
-
-logger = Logger.get_logger(__name__, package=True)
 
 
 @dataclass(kw_only=True)
@@ -74,10 +71,10 @@ VieriLinkedServiceSettingsType = TypeVar("VieriLinkedServiceSettingsType", bound
 @dataclass(kw_only=True)
 class VieriLinkedService(HttpLinkedService[VieriLinkedServiceSettingsType], Generic[VieriLinkedServiceSettingsType]):
     """
-    Linked service for connecting to a Vieri instance using client credentials.
+    Linked service for connecting to a Vieri instance using subscription key authentication.
 
     This class extends the HttpLinkedService and provides functionality specific to Vieri, such as
-    handling authentication with a subscription key and making API requests to the Vieri instance.
+    handling authentication with a subscription key header and making API requests to the Vieri instance.
     """
 
     settings: VieriLinkedServiceSettingsType

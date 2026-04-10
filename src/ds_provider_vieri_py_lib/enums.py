@@ -6,13 +6,13 @@ Constants for VIERI provider.
 
 Example:
     >>> ResourceType.VIERI_LINKED_SERVICE
-    ds.resource.linked_service.vieri
+    ds.resource.linked-service.vieri
 
 """
 
 from enum import StrEnum
 
-# Vieri date format constan
+# Vieri date format constant
 VIERI_DATETIME_FORMAT = "%Y-%m-%d"
 
 

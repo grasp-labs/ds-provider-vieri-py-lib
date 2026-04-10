@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import MagicMock, PropertyMock, patch
 from uuid import uuid4
 
 import pandas as pd
@@ -20,9 +20,10 @@ def mock_linked_service():
     """Mock linked service with mocked connection."""
     settings = VieriLinkedServiceSettings(host="https://api.vieri.com", subscription_key="test_key")
     svc = VieriLinkedService(id=uuid4(), name="test_service", version="1.0.0", settings=settings)
-    # Mock the connection property to avoid initialization errors
-    type(svc).connection = PropertyMock(return_value=MagicMock())
-    return svc
+    # Mock the connection property using patch.object to avoid global class mutation
+    with patch.object(type(svc), "connection", new_callable=PropertyMock) as mock_conn:
+        mock_conn.return_value = MagicMock()
+        yield svc
 
 
 @pytest.fixture
@@ -157,7 +158,7 @@ class TestBuildAndSetCheckpoint:
         vieri_dataset.settings.page_size = 20
         vieri_dataset.settings.last_modified = "2024-01-01"
 
-        vieri_dataset._build_checkpoint(last_offset=60)
+        vieri_dataset._build_checkpoint(last_offset=60, final_page_count=20)
 
         assert vieri_dataset.checkpoint["offset"] == 80
         assert vieri_dataset.checkpoint["last_modified"] == "2024-01-01"
@@ -167,7 +168,7 @@ class TestBuildAndSetCheckpoint:
         vieri_dataset.settings.page_size = 25
         vieri_dataset.settings.last_modified = None
 
-        vieri_dataset._build_checkpoint(last_offset=50)
+        vieri_dataset._build_checkpoint(last_offset=50, final_page_count=25)
 
         assert vieri_dataset.checkpoint["offset"] == 75
 
@@ -186,7 +187,7 @@ class TestReadOperation:
 
         assert isinstance(vieri_dataset.output, pd.DataFrame)
         assert len(vieri_dataset.output) == 2
-        assert vieri_dataset.checkpoint["offset"] == 20
+        assert vieri_dataset.checkpoint["offset"] == 2
 
     def test_read_sets_output_on_success(self, vieri_dataset):
         """Test that output is set to DataFrame on success."""
@@ -235,6 +236,43 @@ class TestReadOperation:
         assert vieri_dataset.output.iloc[0]["id"] == 1
 
 
+class TestResponseValidation:
+    """Test response validation and error handling."""
+
+    def test_read_response_not_dict_raises_error(self, vieri_dataset):
+        """Test that non-dict response raises ReadError."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = ["item1", "item2"]  # List instead of dict
+        vieri_dataset.linked_service.connection.get = MagicMock(return_value=mock_response)
+
+        with pytest.raises(ReadError) as exc_info:
+            vieri_dataset.read()
+
+        assert "expected dict" in str(exc_info.value.message)
+
+    def test_read_response_missing_results_key_raises_error(self, vieri_dataset):
+        """Test that response without 'Results' key raises ReadError."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"data": [{"id": 1}]}  # Missing 'Results' key
+        vieri_dataset.linked_service.connection.get = MagicMock(return_value=mock_response)
+
+        with pytest.raises(ReadError) as exc_info:
+            vieri_dataset.read()
+
+        assert "missing 'Results' key" in str(exc_info.value.message)
+
+    def test_read_results_not_list_raises_error(self, vieri_dataset):
+        """Test that non-list 'Results' value raises ReadError."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"Results": {"id": 1}}  # Dict instead of list
+        vieri_dataset.linked_service.connection.get = MagicMock(return_value=mock_response)
+
+        with pytest.raises(ReadError) as exc_info:
+            vieri_dataset.read()
+
+        assert "expected list" in str(exc_info.value.message)
+
+
 class TestDateFormatting:
     """Test date parsing and formatting utilities."""
 
@@ -249,7 +287,7 @@ class TestDateFormatting:
 
     def test_parse_vieri_date_invalid_raises_error(self, vieri_dataset):
         """Test that invalid date format raises ValueError."""
-        with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        with pytest.raises(ValueError, match="%Y-%m-%d"):
             vieri_dataset.parse_vieri_date("03-15-2024")
 
     def test_format_vieri_date(self, vieri_dataset):
