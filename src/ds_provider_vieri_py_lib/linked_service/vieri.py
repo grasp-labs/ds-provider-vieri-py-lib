@@ -54,7 +54,7 @@ class VieriLinkedServiceSettings(HttpLinkedServiceSettings):
     host: str
     """ The base URL for the Vieri API (required). """
 
-    subscription_key: str
+    subscription_key: str = field(repr=False, metadata={"mask": True})
     """ The subscription key for authentication (required). """
 
     auth_type: enums.AuthType = enums.AuthType.NO_AUTH

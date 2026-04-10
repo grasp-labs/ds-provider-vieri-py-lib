@@ -65,14 +65,14 @@ class VieriDatasetSettings(DatasetSettings):
     product_name: str
     """The Vieri product name to connect to. This should match one of the products available in the Vieri API."""
 
-    take: int | None = None
-    """Page size for pagination. Optional."""
+    page_size: int = 20
+    """Number of records per page for pagination. Optional, defaults to 20"""
 
-    skip: int | None = None
-    """Offset for pagination. Optional."""
+    offset: int = 0
+    """Number of records to skip before starting pagination. Optional, defaults to 0"""
 
-    modified_after: str | None = None
-    """Vieri date string (YYYY-MM-DD) to filter results modified after this date. Optional."""
+    last_modified: str | None = None
+    """Vieri date string (YYYY-MM-DD) to filter results modified after this date. Optional filter parameter for API requests."""
 
 
 VieriDatasetSettingsType = TypeVar(
@@ -100,6 +100,9 @@ class VieriDataset(
         default_factory=lambda: PandasDeserializer(format=DatasetStorageFormatType.JSON),
     )
 
+    # Inherited from base class; type hint silences linter warnings
+    output: pd.DataFrame = field(init=False, default_factory=pd.DataFrame)
+
     @property
     def type(self) -> ResourceType:
         return ResourceType.VIERI_DATASET
@@ -116,71 +119,123 @@ class VieriDataset(
         Raises:
             ReadError: If reading data fails.
         """
-        url = f"{self.linked_service.settings.host}/{self.settings.owner_id}/api/public/{self.settings.product_name}"
-        headers = self.linked_service.settings.headers
-        take = self.settings.take or 1000
-        skip = self.settings.skip or 0
-        params = {}
-        modified_after = None
-        if self.checkpoint and isinstance(self.checkpoint, dict) and self.checkpoint.get("modified_after"):
-            modified_after = self.checkpoint["modified_after"]
-            # Try to parse and reformat to ensure correct format
-            if modified_after is not None:
-                try:
-                    modified_after = self.format_vieri_date(self.parse_vieri_date(modified_after))
-                except Exception as e:
-                    raise ReadError(f"Invalid date format for checkpoint.modified_after: {modified_after}") from e
-        elif self.settings.modified_after is not None:
-            modified_after = self.settings.modified_after
-            if modified_after:
-                try:
-                    modified_after = self.format_vieri_date(self.parse_vieri_date(modified_after))
-                except Exception as e:
-                    raise ReadError(f"Invalid date format for settings.modified_after: {modified_after}") from e
-        if modified_after is not None:
-            params["ModifiedAfter"] = modified_after
-        try:
-            all_results, latest_modified = self._fetch_all_pages(url, headers, params, take, skip)
-            self.output = pd.DataFrame(all_results)
-            self._update_checkpoint(latest_modified)
-        except Exception as e:
-            raise ReadError(f"Failed to fetch data from Vieri API: {e}") from e
-
-    def _fetch_all_pages(
-        self,
-        url: str,
-        headers: dict[str, str],
-        params: dict[str, Any],
-        take: int,
-        skip: int,
-    ) -> tuple[list[dict[str, Any]], str | None]:
-        """Helper to fetch all paginated results from the Vieri API."""
+        logger.info(
+            "Starting read operation for VieriDataset with owner_id=%s, product_name=%s",
+            self.settings.owner_id,
+            self.settings.product_name,
+        )
         all_results: list[dict[str, Any]] = []
-        latest_modified = params.get("ModifiedAfter")
-        while True:
-            page_params = params.copy()
-            page_params["Take"] = take
-            page_params["Skip"] = skip
-            response = self.linked_service.connection.get(url, headers=headers, params=page_params)
-            response.raise_for_status()
-            data = response.json()
-            results = data["Results"] if isinstance(data, dict) and "Results" in data else data
-            if not results:
-                break
-            all_results.extend(results)
-            for row in results:
-                row_modified = row.get("Modified", None)
-                if row_modified and (latest_modified is None or row_modified > latest_modified):
-                    latest_modified = row_modified
-            if len(results) < take:
-                break
-            skip += take
-        return all_results, latest_modified
+        last_offset: int = 0
 
-    def _update_checkpoint(self, latest_modified: str | None) -> None:
-        """Helper to update the checkpoint with the latest modified value."""
-        if latest_modified is not None:
-            self.checkpoint = {"modified_after": latest_modified}
+        try:
+            url = f"{self.linked_service.settings.host}/v1/{self.settings.product_name}"
+
+            # Build initial params considering checkpoint state
+            params = self._build_request_params()
+            last_offset = params.get("Skip", 0)
+
+            # Paginate through all results
+            while True:
+                response = self.linked_service.connection.get(url, headers=self.linked_service.settings.headers, params=params)
+                response.raise_for_status()
+
+                data = response.json()
+                results = data["Results"] if isinstance(data, dict) and "Results" in data else data
+
+                if not results:
+                    break
+
+                all_results.extend(results)
+                last_offset = params.get("Skip", 0)
+
+                # Check if we got less results than requested (last page)
+                if len(results) < params.get("Take", 0):
+                    break
+
+                # Increment skip for next page
+                params["Skip"] = params.get("Skip", 0) + params.get("Take", self.settings.page_size)
+
+        except ReadError:
+            raise
+        except Exception as exc:
+            logger.error("Error during read operation: %s", exc)
+            # Wrap backend exceptions per contract: never leak raw errors
+            raise ReadError(
+                message=f"Failed to read data from Vieri API: {exc}",
+                details={"owner_id": self.settings.owner_id, "product_name": self.settings.product_name},
+            ) from exc
+        finally:
+            # Always populate output and checkpoint, even with partial results
+            self.output = pd.DataFrame(all_results)
+            self._build_checkpoint(last_offset)
+
+    def _build_request_params(self) -> dict[str, Any]:
+        """
+        Build request parameters considering checkpoint state.
+
+        - **Full load** (empty checkpoint): Uses settings for pagination and scope
+        - **Incremental load** (populated checkpoint): Uses checkpoint for offset and last_modified
+
+        Settings define the static scope, checkpoint tracks the moving position.
+        When both apply (e.g., last_modified), settings provide the lower bound,
+        checkpoint narrows further by tracking progress within that scope.
+
+        :return: Dictionary with API request parameters (Skip, Take, ModifiedAfter).
+        """
+        is_full_load = not self.checkpoint or self.checkpoint == {}
+
+        if is_full_load:
+            # Full load: use settings values as scope
+            skip = self.settings.offset
+            take = self.settings.page_size
+            last_modified = self.settings.last_modified
+        else:
+            # Incremental/resuming load: use checkpoint to continue from last position
+            skip = self.checkpoint.get("offset", self.settings.offset)
+            take = self.checkpoint.get("page_size", self.settings.page_size)
+            # Checkpoint last_modified takes precedence (narrowed from settings scope)
+            last_modified = self.checkpoint.get("last_modified", self.settings.last_modified)
+
+        # Build params dict
+        params: dict[str, Any] = {"Skip": skip, "Take": take}
+
+        # Add ModifiedAfter filter if specified (from scope or checkpoint)
+        if last_modified:
+            params["ModifiedAfter"] = last_modified
+
+        return params
+
+    def _build_checkpoint(self, last_offset: int) -> None:
+        """
+        Build and set the checkpoint dict with pagination state.
+
+        Saves the last offset to enable resuming from this exact position
+        on the next incremental load.
+
+        :param last_offset: The last Skip offset value that was successfully fetched.
+        """
+        if not self.supports_checkpoint:
+            return
+
+        # Use getattr to safely access checkpoint from base class and satisfy type checker
+        if getattr(self, "checkpoint", None) is None:
+            self.checkpoint = {}
+
+        # Get current params to preserve modifiers (like last_modified)
+        current_params = self._build_request_params()
+
+        # Update offset for pagination persistence (this is the NEXT offset to resume from)
+        self.checkpoint["offset"] = last_offset + current_params.get("Take", self.settings.page_size)
+
+        # Preserve last_modified in checkpoint if it exists (for incremental resumption)
+        if current_params.get("ModifiedAfter"):
+            self.checkpoint["last_modified"] = current_params["ModifiedAfter"]
+
+        logger.debug(
+            "Checkpoint set: offset=%s, last_modified=%s",
+            self.checkpoint.get("offset"),
+            self.checkpoint.get("last_modified"),
+        )
 
     def parse_vieri_date(self, date_str: str) -> datetime:
         """Parse a Vieri date string (YYYY-MM-DD) to a datetime object. Strictly enforces format."""

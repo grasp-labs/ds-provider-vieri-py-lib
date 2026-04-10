@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ds-provider-vieri-py-lib"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 description = "A Python package from the DS library collection"
 dependencies = [
     "ds-common-logger-py-lib>=0.1.0-alpha.6,<1.0.0",
