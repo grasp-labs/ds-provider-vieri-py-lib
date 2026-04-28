@@ -244,12 +244,43 @@ class TestBuildAndSetCheckpoint:
 
     def test_build_and_set_checkpoint_no_modifiers(self, vieri_dataset):
         """Test checkpoint without filters."""
-        vieri_dataset.settings.page_size = 25
-        vieri_dataset.settings.last_modified = None
+        vieri_dataset.settings.read.page_size = 25
+        vieri_dataset.settings.read.last_modified = None
 
         vieri_dataset._build_checkpoint(last_offset=50, final_page_count=25)
 
         assert vieri_dataset.checkpoint["offset"] == 75
+
+    def test_build_checkpoint_non_raising_with_invalid_date_in_checkpoint(self, vieri_dataset):
+        """Test that _build_checkpoint() is non-raising even with invalid date in checkpoint.
+
+        This verifies the fix for exception masking: _build_checkpoint() should not
+        raise even if checkpoint contains an invalid date string, since it reads dates
+        directly without validation (validation happens later in _build_request_params).
+        """
+        # Set checkpoint with invalid date that would fail validation
+        vieri_dataset.checkpoint = {"last_modified": "invalid-date"}
+
+        # Should not raise even though the date is invalid
+        vieri_dataset._build_checkpoint(last_offset=100, final_page_count=10)
+
+        # Verify checkpoint was updated with new offset
+        assert vieri_dataset.checkpoint["offset"] == 110
+        # Invalid date should still be preserved (not validated or removed)
+        assert vieri_dataset.checkpoint["last_modified"] == "invalid-date"
+
+    def test_build_checkpoint_incremental_preserves_checkpoint_last_modified(self, vieri_dataset):
+        """Test that incremental load preserves checkpoint's last_modified."""
+        # Set checkpoint with a valid date
+        vieri_dataset.checkpoint = {"offset": 50, "last_modified": "2024-02-15"}
+        # Settings has a different date (should be ignored in incremental load)
+        vieri_dataset.settings.read.last_modified = "2024-01-01"
+
+        vieri_dataset._build_checkpoint(last_offset=50, final_page_count=20)
+
+        # Checkpoint's last_modified should be preserved
+        assert vieri_dataset.checkpoint["last_modified"] == "2024-02-15"
+        assert vieri_dataset.checkpoint["offset"] == 70
 
 
 class TestReadOperation:
@@ -303,12 +334,10 @@ class TestReadOperation:
         mock_response = MagicMock()
         vieri_dataset.settings.read.page_size = 2
 
-        def raise_exception(*args, **kwargs):
-            raise Exception("Page 2 fails")
-
+        # Use Exception instance directly (not a function) so unittest.mock raises it
         mock_response.json.side_effect = [
             {"Results": [{"id": 1}, {"id": 2}]},
-            raise_exception,
+            Exception("Page 2 fails"),
         ]
         vieri_dataset.linked_service.connection.get = MagicMock(return_value=mock_response)
 
@@ -317,6 +346,37 @@ class TestReadOperation:
 
         assert len(vieri_dataset.output) == 2
         assert vieri_dataset.output.iloc[0]["id"] == 1
+
+    def test_read_original_exception_not_masked_by_invalid_checkpoint_date(self, vieri_dataset):
+        """Test that original ReadError is not masked by _build_checkpoint().
+
+        This test verifies the fix for exception masking: if read() fails with an API error,
+        _build_checkpoint() in the finally block should not raise and mask that original error.
+
+        Before the fix, _build_checkpoint() called _build_request_params() which could raise
+        ValueError from date validation, masking the original exception from the try block.
+        """
+        # Set up checkpoint with invalid date that _build_checkpoint would receive
+        vieri_dataset.checkpoint = {
+            "offset": 0,
+            "last_modified": "2024-01-01",  # Valid date for params building
+        }
+
+        # Cause read() to fail with an API error
+        vieri_dataset.linked_service.connection.get = MagicMock(side_effect=Exception("API connection failed"))
+
+        # Should raise ReadError (from the API failure), wrapped properly
+        with pytest.raises(ReadError) as exc_info:
+            vieri_dataset.read()
+
+        # Verify it's the ReadError wrapping the API error, not a ValueError
+        assert "Failed to read data from Vieri API" in str(exc_info.value.message)
+        assert "API connection failed" in str(exc_info.value.message)
+
+        # Verify output was still set in the finally block (proving _build_checkpoint didn't raise)
+        assert isinstance(vieri_dataset.output, pd.DataFrame)
+        # Verify checkpoint was updated despite the error
+        assert "offset" in vieri_dataset.checkpoint
 
 
 class TestResponseValidation:

@@ -273,6 +273,9 @@ class VieriDataset(
         Saves the last offset to enable resuming from this exact position
         on the next incremental load.
 
+        Non-raising: safely reads last_modified from checkpoint/settings without validation
+        to avoid masking exceptions when called from finally blocks.
+
         :param last_offset: The last Skip offset value that was successfully fetched.
         :param final_page_count: The actual number of records in the final batch (for accurate offset).
         """
@@ -283,16 +286,21 @@ class VieriDataset(
         if getattr(self, "checkpoint", None) is None:
             self.checkpoint = {}
 
-        # Get current params to preserve modifiers (like last_modified)
-        current_params = self._build_request_params()
+        # Determine last_modified from checkpoint or settings (without validation to stay non-raising)
+        is_full_load = not self.checkpoint or self.checkpoint == {}
+        if is_full_load:
+            last_modified = self.settings.read.last_modified
+        else:
+            # Checkpoint last_modified takes precedence (narrowed from settings scope)
+            last_modified = self.checkpoint.get("last_modified", self.settings.read.last_modified)
 
         # Update offset for pagination persistence using actual record count from final batch
         # This prevents overshooting on partial/last pages
         self.checkpoint["offset"] = last_offset + final_page_count
 
         # Preserve last_modified in checkpoint if it exists (for incremental resumption)
-        if current_params.get("ModifiedAfter"):
-            self.checkpoint["last_modified"] = current_params["ModifiedAfter"]
+        if last_modified:
+            self.checkpoint["last_modified"] = last_modified
 
         logger.debug(
             "Checkpoint set: offset=%s, last_modified=%s",
