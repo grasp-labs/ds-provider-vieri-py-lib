@@ -7,10 +7,10 @@ from uuid import uuid4
 
 import pandas as pd
 import pytest
-from ds_resource_plugin_py_lib.common.resource.dataset.errors import ReadError
+from ds_resource_plugin_py_lib.common.resource.dataset.errors import CreateError, ReadError
 from ds_resource_plugin_py_lib.common.resource.errors import NotSupportedError
 
-from ds_provider_vieri_py_lib.dataset.vieri import VieriDataset, VieriDatasetSettings
+from ds_provider_vieri_py_lib.dataset.vieri import VieriDataset, VieriDatasetSettings, VieriReadSettings
 from ds_provider_vieri_py_lib.enums import ResourceType
 from ds_provider_vieri_py_lib.linked_service.vieri import VieriLinkedService, VieriLinkedServiceSettings
 
@@ -32,9 +32,11 @@ def vieri_settings():
     return VieriDatasetSettings(
         owner_id="test_owner",
         product_name="test_product",
-        page_size=20,
-        offset=0,
-        last_modified=None,
+        read=VieriReadSettings(
+            page_size=20,
+            offset=0,
+            last_modified=None,
+        ),
     )
 
 
@@ -87,19 +89,96 @@ class TestVieriDatasetBasics:
         with pytest.raises(NotSupportedError):
             vieri_dataset.purge()
 
-    def test_create_not_implemented(self, vieri_dataset):
-        """Test that create raises NotImplementedError."""
-        with pytest.raises(NotImplementedError):
+    def test_create_not_supported_without_endpoint(self, vieri_dataset):
+        """Test that create raises NotSupportedError when write_endpoint is not configured."""
+        # write_endpoint is None by default
+        vieri_dataset.input = pd.DataFrame({"id": [1, 2], "name": ["a", "b"]})
+        with pytest.raises(NotSupportedError, match="Write operations not supported"):
             vieri_dataset.create()
 
-    def test_update_not_implemented(self, vieri_dataset):
-        """Test that update raises NotImplementedError."""
-        with pytest.raises(NotImplementedError):
+    def test_create_empty_input_is_noop(self, vieri_dataset, caplog):
+        """Test that create with empty input returns immediately (no-op per contract)."""
+        caplog.set_level(logging.INFO)
+        vieri_dataset.input = pd.DataFrame()  # Empty input
+        vieri_dataset.settings.create.write_endpoint = "vieri-dataloader/LoadAccounts"
+
+        vieri_dataset.create()  # Should not raise
+
+        assert vieri_dataset.output.empty
+        assert "empty input, returning immediately" in caplog.text
+        # Verify no POST was made
+        vieri_dataset.linked_service.connection.post.assert_not_called()
+
+    def test_create_none_input_is_noop(self, vieri_dataset, caplog):
+        """Test that create with None input returns immediately (no-op per contract)."""
+        caplog.set_level(logging.INFO)
+        vieri_dataset.input = None  # None input
+        vieri_dataset.settings.create.write_endpoint = "vieri-dataloader/LoadAccounts"
+
+        vieri_dataset.create()  # Should not raise
+
+        assert vieri_dataset.output.empty
+        assert "empty input" in caplog.text
+        vieri_dataset.linked_service.connection.post.assert_not_called()
+
+    def test_create_success_with_input(self, vieri_dataset, caplog):
+        """Test successful create operation with records from self.input."""
+        caplog.set_level(logging.INFO)
+        test_records = {"id": [1, 2], "name": ["John", "Jane"]}
+        vieri_dataset.input = pd.DataFrame(test_records)
+        vieri_dataset.settings.create.write_endpoint = "vieri-dataloader/LoadAccounts"
+
+        # Mock successful POST response
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        vieri_dataset.linked_service.connection.post.return_value = mock_response
+
+        vieri_dataset.create()
+
+        # Verify POST was called with correct parameters
+        vieri_dataset.linked_service.connection.post.assert_called_once()
+        call_args = vieri_dataset.linked_service.connection.post.call_args
+        assert "vieri-dataloader/LoadAccounts" in call_args.args[0]
+        assert call_args.kwargs["json"]["Records"] == [{"id": 1, "name": "John"}, {"id": 2, "name": "Jane"}]
+        # Verify output is populated with copy of input
+        assert len(vieri_dataset.output) == 2
+        assert "Successfully created 2 records" in caplog.text
+
+    def test_create_with_different_endpoint(self, vieri_dataset):
+        """Test create with different write endpoints."""
+        vieri_dataset.input = pd.DataFrame({"id": [1], "name": ["Test"]})
+        vieri_dataset.settings.create.write_endpoint = "vieri-dataloader/LoadSuppliers"
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        vieri_dataset.linked_service.connection.post.return_value = mock_response
+
+        vieri_dataset.create()
+
+        call_args = vieri_dataset.linked_service.connection.post.call_args
+        assert "vieri-dataloader/LoadSuppliers" in call_args.args[0]
+
+    def test_create_api_failure(self, vieri_dataset):
+        """Test create operation when API returns error."""
+        vieri_dataset.input = pd.DataFrame({"id": [1], "name": ["Test"]})
+        vieri_dataset.settings.create.write_endpoint = "vieri-dataloader/LoadAccounts"
+
+        # Mock POST response that raises an error
+        mock_response = MagicMock()
+        mock_response.raise_for_status.side_effect = Exception("API Error")
+        vieri_dataset.linked_service.connection.post.return_value = mock_response
+
+        with pytest.raises(CreateError, match="Failed to create records"):
+            vieri_dataset.create()
+
+    def test_update_not_supported(self, vieri_dataset):
+        """Test that update raises NotSupportedError."""
+        with pytest.raises(NotSupportedError):
             vieri_dataset.update()
 
-    def test_delete_not_implemented(self, vieri_dataset):
-        """Test that delete raises NotImplementedError."""
-        with pytest.raises(NotImplementedError):
+    def test_delete_not_supported(self, vieri_dataset):
+        """Test that delete raises NotSupportedError."""
+        with pytest.raises(NotSupportedError):
             vieri_dataset.delete()
 
 
@@ -109,9 +188,9 @@ class TestBuildRequestParams:
     def test_build_params_full_load_empty_checkpoint(self, vieri_dataset):
         """Test that full load uses settings when checkpoint is empty."""
         vieri_dataset.checkpoint = {}
-        vieri_dataset.settings.page_size = 25
-        vieri_dataset.settings.offset = 0
-        vieri_dataset.settings.last_modified = "2024-01-01"
+        vieri_dataset.settings.read.page_size = 25
+        vieri_dataset.settings.read.offset = 0
+        vieri_dataset.settings.read.last_modified = "2024-01-01"
 
         params = vieri_dataset._build_request_params()
 
@@ -122,9 +201,9 @@ class TestBuildRequestParams:
     def test_build_params_full_load_no_checkpoint(self, vieri_dataset):
         """Test that full load uses settings when checkpoint is None."""
         vieri_dataset.checkpoint = None
-        vieri_dataset.settings.page_size = 50
-        vieri_dataset.settings.offset = 10
-        vieri_dataset.settings.last_modified = None
+        vieri_dataset.settings.read.page_size = 50
+        vieri_dataset.settings.read.offset = 10
+        vieri_dataset.settings.read.last_modified = None
 
         params = vieri_dataset._build_request_params()
 
@@ -139,9 +218,9 @@ class TestBuildRequestParams:
             "page_size": 30,
             "last_modified": "2024-02-01",
         }
-        vieri_dataset.settings.page_size = 20
-        vieri_dataset.settings.offset = 0
-        vieri_dataset.settings.last_modified = "2024-01-01"
+        vieri_dataset.settings.read.page_size = 20
+        vieri_dataset.settings.read.offset = 0
+        vieri_dataset.settings.read.last_modified = "2024-01-01"
 
         params = vieri_dataset._build_request_params()
 
@@ -155,8 +234,8 @@ class TestBuildAndSetCheckpoint:
 
     def test_build_and_set_checkpoint_preserves_modifiers(self, vieri_dataset):
         """Test that checkpoint preserves ModifiedAfter filter."""
-        vieri_dataset.settings.page_size = 20
-        vieri_dataset.settings.last_modified = "2024-01-01"
+        vieri_dataset.settings.read.page_size = 20
+        vieri_dataset.settings.read.last_modified = "2024-01-01"
 
         vieri_dataset._build_checkpoint(last_offset=60, final_page_count=20)
 
@@ -222,10 +301,14 @@ class TestReadOperation:
     def test_read_partial_results_on_error(self, vieri_dataset):
         """Test that partial results are preserved in output on error."""
         mock_response = MagicMock()
-        vieri_dataset.settings.page_size = 2
+        vieri_dataset.settings.read.page_size = 2
+
+        def raise_exception(*args, **kwargs):
+            raise Exception("Page 2 fails")
+
         mock_response.json.side_effect = [
             {"Results": [{"id": 1}, {"id": 2}]},
-            Exception("Page 2 fails"),
+            raise_exception,
         ]
         vieri_dataset.linked_service.connection.get = MagicMock(return_value=mock_response)
 

@@ -4,30 +4,30 @@
 
 Vieri Dataset
 
-This module implements a dataset for Vieri APIs.
+This module implements a dataset for Vieri APIs with support for both read and write operations.
 
-Example:
+Example (Read):
     >>> from uuid import uuid4
     >>> dataset = VieriDataset(
     ...     id=uuid4(),
-    ...     name="employees_dataset",
+    ...     name="accounts_dataset",
     ...     version="1.0.0",
     ...     settings=VieriDatasetSettings(
-    ...         data_product=VieriDataProducts.EMPLOYEES,
-    ...         read=ReadSettings(page_size=100),
+    ...         owner_id="my_owner",
+    ...         product_name="Accounts",
+    ...         read=VieriReadSettings(page_size=100),
     ...     ),
     ...     linked_service=VieriLinkedService(
     ...         id=uuid4(),
     ...         name="vieri_connection",
     ...         version="1.0.0",
     ...         settings=VieriLinkedServiceSettings(
-    ...             host="https://api.vieri.com",
+    ...             host="https://vieri-api.azure-api.net",
     ...             subscription_key="your_subscription_key"
     ...         ),
     ...     ),
     ... )
-    >>> linked_service = dataset.linked_service
-    >>> linked_service.connect()
+    >>> dataset.linked_service.connect()
     >>> dataset.read()
     >>> data = dataset.output
 """
@@ -38,8 +38,10 @@ from typing import Any, Generic, TypeVar
 
 import pandas as pd
 from ds_common_logger_py_lib import Logger
+from ds_common_serde_py_lib import Serializable
 from ds_resource_plugin_py_lib.common.resource.dataset import DatasetSettings, DatasetStorageFormatType, TabularDataset
 from ds_resource_plugin_py_lib.common.resource.dataset.errors import (
+    CreateError,
     ReadError,
 )
 from ds_resource_plugin_py_lib.common.resource.errors import NotSupportedError
@@ -53,17 +55,13 @@ logger = Logger.get_logger(__name__, package=True)
 
 
 @dataclass(kw_only=True)
-class VieriDatasetSettings(DatasetSettings):
+class VieriReadSettings(Serializable):
     """
-    Settings for Vieri dataset, extending the base DatasetSettings.
-    Includes Vieri API endpoint and query parameters.
+    Settings specific to the read() operation.
+
+    These settings only apply when reading data from the Vieri API
+    and do not affect create() operations.
     """
-
-    owner_id: str
-    """The owner ID of the dataset in Vieri. This should be a valid identifier corresponding to the dataset owner in Vieri."""
-
-    product_name: str
-    """The Vieri product name to connect to. This should match one of the products available in the Vieri API."""
 
     page_size: int = 20
     """Number of records per page for pagination. Optional, defaults to 20"""
@@ -73,6 +71,40 @@ class VieriDatasetSettings(DatasetSettings):
 
     last_modified: str | None = None
     """Vieri date string (YYYY-MM-DD) to filter results modified after this date. Optional filter parameter for API requests."""
+
+
+@dataclass(kw_only=True)
+class VieriCreateSettings(Serializable):
+    """
+    Settings specific to the create() operation.
+
+    These settings only apply when writing data to the Vieri API
+    and do not affect read() operations.
+    """
+
+    write_endpoint: str | None = None
+    """Endpoint path for POST operations (e.g., 'vieri-dataloader/LoadAccounts').
+    If not set, write operations are not supported."""
+
+
+@dataclass(kw_only=True)
+class VieriDatasetSettings(DatasetSettings):
+    """
+    Settings for Vieri dataset, extending the base DatasetSettings.
+    Separates read and write configuration into method-specific settings.
+    """
+
+    owner_id: str
+    """The owner ID of the dataset in Vieri. This should be a valid identifier corresponding to the dataset owner in Vieri."""
+
+    product_name: str
+    """The Vieri product name to connect to. This should match one of the products available in the Vieri API."""
+
+    read: VieriReadSettings = field(default_factory=VieriReadSettings)
+    """Settings for read() operation."""
+
+    create: VieriCreateSettings = field(default_factory=VieriCreateSettings)
+    """Settings for create() operation."""
 
 
 VieriDatasetSettingsType = TypeVar(
@@ -211,15 +243,15 @@ class VieriDataset(
 
         if is_full_load:
             # Full load: use settings values as scope
-            skip = self.settings.offset
-            take = self.settings.page_size
-            last_modified = self.settings.last_modified
+            skip = self.settings.read.offset
+            take = self.settings.read.page_size
+            last_modified = self.settings.read.last_modified
         else:
             # Incremental/resuming load: use checkpoint to continue from last position
-            skip = self.checkpoint.get("offset", self.settings.offset)
-            take = self.checkpoint.get("page_size", self.settings.page_size)
+            skip = self.checkpoint.get("offset", self.settings.read.offset)
+            take = self.checkpoint.get("page_size", self.settings.read.page_size)
             # Checkpoint last_modified takes precedence (narrowed from settings scope)
-            last_modified = self.checkpoint.get("last_modified", self.settings.last_modified)
+            last_modified = self.checkpoint.get("last_modified", self.settings.read.last_modified)
 
         # Build params dict
         params: dict[str, Any] = {"Skip": skip, "Take": take}
@@ -281,30 +313,90 @@ class VieriDataset(
 
     def create(self) -> None:
         """
-        Create a new dataset in Vieri.
+        Create (insert) new records in Vieri via POST request.
+
+        Uses data from self.input (provided by the caller) and POSTs it to the Vieri write endpoint.
+        Populates self.output with affected rows (backend response or copy of self.input).
+        Empty input is a no-op and returns immediately.
 
         Raises:
-            CreateError: If creating the dataset fails.
+            CreateError: If the write operation fails (including if the API doesn't support writes).
         """
-        raise NotImplementedError("Create method not implemented yet for VieriDataset.")
+        # Check if write_endpoint is configured
+        if not self.settings.create.write_endpoint:
+            raise NotSupportedError("Write operations not supported: write_endpoint is not configured")
+
+        if self.input is None or self.input.empty:
+            logger.info("create() called with empty input, returning immediately (no-op)")
+            self.output = pd.DataFrame()
+            return
+
+        logger.info(
+            "Starting create operation for VieriDataset with product_name=%s, records=%d",
+            self.settings.product_name,
+            len(self.input),
+        )
+
+        try:
+            # Build write endpoint URL
+            url = f"{self.linked_service.settings.host}/{self.settings.create.write_endpoint}"
+
+            # Convert DataFrame to list of dicts for JSON payload
+            records = self.input.to_dict(orient="records")
+            payload = {"Records": records}
+
+            logger.debug(
+                "POSTing %d records to Vieri endpoint: %s",
+                len(records),
+                url,
+            )
+
+            # Send POST request
+            response = self.linked_service.connection.post(
+                url,
+                json=payload,
+                headers=self.linked_service.settings.headers,
+            )
+            response.raise_for_status()
+
+            logger.info(
+                "Successfully created %d records in Vieri for product_name=%s",
+                len(records),
+                self.settings.product_name,
+            )
+
+            # The API returns 200 on success; populate output with input records
+            self.output = self.input.copy()
+
+        except NotSupportedError:
+            raise
+        except Exception as exc:
+            logger.error("Error during create operation: %s", exc)
+            raise CreateError(
+                message=f"Failed to create records in Vieri API: {exc}",
+                details={
+                    "product_name": self.settings.product_name,
+                    "records_count": len(self.input),
+                },
+            ) from exc
 
     def update(self) -> None:
         """
-        Update the dataset in Vieri.
+        Update is not supported by the Vieri provider.
 
         Raises:
-            UpdateError: If updating the dataset fails.
+            NotSupportedError: Update operations are not available.
         """
-        raise NotImplementedError("Update method not implemented yet for VieriDataset.")
+        raise NotSupportedError("Method (update) not supported by Vieri provider.")
 
     def delete(self) -> None:
         """
-        Delete the dataset from Vieri.
+        Delete is not supported by the Vieri provider.
 
         Raises:
-            DeleteError: If deleting the dataset fails.
+            NotSupportedError: Delete operations are not available.
         """
-        raise NotImplementedError("Delete method not implemented yet for VieriDataset.")
+        raise NotSupportedError("Method (delete) not supported by Vieri provider.")
 
     def close(self) -> None:
         """
@@ -313,7 +405,7 @@ class VieriDataset(
         Raises:
             Exception: If closing the dataset fails.
         """
-        logger.info("Closing VieriDataset and releasing resources.")
+        logger.info("Closing VieriDataset")
 
     def rename(self) -> None:
         """Rename is not supported by Vieri provider."""
