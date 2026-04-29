@@ -158,17 +158,14 @@ class VieriDataset(
         )
         all_results: list[dict[str, Any]] = []
         last_offset: int = 0
-        final_page_count: int = 0  # Track count of final page for accurate checkpoint
+        final_page_count: int = 0
+
+        params = self._build_request_params()
 
         try:
-            url = f"{self.linked_service.settings.host}/{self.settings.owner_id}/api/public/{self.settings.product_name}"
-
-            # Build initial params considering checkpoint state
-            params = self._build_request_params()
-            last_offset = params.get("Skip", 0)
-
-            # Paginate through all results
             while True:
+                url = f"{self.linked_service.settings.host}/{self.settings.owner_id}/api/public/{self.settings.product_name}"
+                last_offset = params.get("Skip", 0)
                 response = self.linked_service.connection.get(url, headers=self.linked_service.settings.headers, params=params)
                 response.raise_for_status()
 
