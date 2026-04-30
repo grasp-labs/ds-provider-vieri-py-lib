@@ -23,3 +23,16 @@ class ResourceType(StrEnum):
 
     VIERI_LINKED_SERVICE = "ds.resource.linked-service.vieri"
     VIERI_DATASET = "ds.resource.dataset.vieri"
+
+
+class VieriApiType(StrEnum):
+    """
+    Enum for supported Vieri API types.
+
+    Attributes:
+        IVAR: IVAR API for general read/write operations.
+        DATALOADER: Vieri Dataloader API for bulk data loading.
+    """
+
+    IVAR = "ivar"
+    DATALOADER = "dataloader"

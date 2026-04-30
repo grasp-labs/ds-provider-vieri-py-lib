@@ -4,16 +4,18 @@
 
 Vieri Dataset
 
-This module implements a dataset for Vieri APIs with support for both read and write operations.
+This module implements a dataset for Vieri APIs with support for multiple operations across two API types:
+- IVAR API: Supports read (GET), create (POST), update (POST), and delete (DELETE)
+- Dataloader API: Supports create (POST) only
 
-Example (Read):
+Example (IVAR Read):
     >>> from uuid import uuid4
     >>> dataset = VieriDataset(
     ...     id=uuid4(),
     ...     name="accounts_dataset",
     ...     version="1.0.0",
     ...     settings=VieriDatasetSettings(
-    ...         owner_id="my_owner",
+    ...         api_type="ivar",
     ...         product_name="Accounts",
     ...         read=VieriReadSettings(page_size=100),
     ...     ),
@@ -30,6 +32,25 @@ Example (Read):
     >>> dataset.linked_service.connect()
     >>> dataset.read()
     >>> data = dataset.output
+
+Example (Dataloader Create):
+    >>> from uuid import uuid4
+    >>> import pandas as pd
+    >>> dataset = VieriDataset(
+    ...     id=uuid4(),
+    ...     name="load_accounts_dataset",
+    ...     version="1.0.0",
+    ...     settings=VieriDatasetSettings(
+    ...         api_type="dataloader",
+    ...         product_name="LoadAccounts",
+    ...         create=VieriCreateSettings(write_endpoint="vieri-dataloader/LoadAccounts"),
+    ...     ),
+    ...     linked_service=VieriLinkedService(...),
+    ... )
+    >>> dataset.input = pd.DataFrame([{"name": "Company A"}])
+    >>> dataset.linked_service.connect()
+    >>> dataset.create()
+    >>> result = dataset.output
 """
 
 from dataclasses import dataclass, field
@@ -42,13 +63,15 @@ from ds_common_serde_py_lib import Serializable
 from ds_resource_plugin_py_lib.common.resource.dataset import DatasetSettings, DatasetStorageFormatType, TabularDataset
 from ds_resource_plugin_py_lib.common.resource.dataset.errors import (
     CreateError,
+    DeleteError,
     ReadError,
+    UpdateError,
 )
 from ds_resource_plugin_py_lib.common.resource.errors import NotSupportedError
 from ds_resource_plugin_py_lib.common.serde.deserialize import PandasDeserializer
 from ds_resource_plugin_py_lib.common.serde.serialize import PandasSerializer
 
-from ..enums import VIERI_DATETIME_FORMAT, ResourceType
+from ..enums import VIERI_DATETIME_FORMAT, ResourceType, VieriApiType
 from ..linked_service.vieri import VieriLinkedService
 
 logger = Logger.get_logger(__name__, package=True)
@@ -89,22 +112,33 @@ class VieriCreateSettings(Serializable):
 
 @dataclass(kw_only=True)
 class VieriDatasetSettings(DatasetSettings):
-    """
-    Settings for Vieri dataset, extending the base DatasetSettings.
-    Separates read and write configuration into method-specific settings.
-    """
+    """Settings for Vieri dataset, extending the base DatasetSettings."""
 
-    owner_id: str
-    """The owner ID of the dataset in Vieri. This should be a valid identifier corresponding to the dataset owner in Vieri."""
+    api_type: VieriApiType
+    """The type of Vieri API to connect to, which determines the owner_id and endpoint structure.
+    Valid values: "ivar" for standard Vieri APIs, "dataloader" for the Vieri Data Loader API."""
 
     product_name: str
-    """The Vieri product name to connect to. This should match one of the products available in the Vieri API."""
+    """The name of the product or entity to interact with in the Vieri API (e.g., "Accounts", "Contacts")."""
 
     read: VieriReadSettings = field(default_factory=VieriReadSettings)
     """Settings for read() operation."""
 
     create: VieriCreateSettings = field(default_factory=VieriCreateSettings)
     """Settings for create() operation."""
+
+    owner_id: str = field(init=False)
+    """The owner_id is auto-populated in __post_init__ based on api_type:
+    - For "ivar" API type, owner_id is set to "ivar".
+    - For "dataloader" API type, owner_id is set to "vieri-dataloader".
+    """
+
+    def __post_init__(self) -> None:
+        """Auto-populate owner_id based on api_type."""
+        if self.api_type == VieriApiType.IVAR:
+            self.owner_id = "ivar"
+        elif self.api_type == VieriApiType.DATALOADER:
+            self.owner_id = "vieri-dataloader"
 
 
 VieriDatasetSettingsType = TypeVar(
@@ -164,7 +198,7 @@ class VieriDataset(
 
         try:
             while True:
-                url = f"{self.linked_service.settings.host}/{self.settings.owner_id}/api/public/{self.settings.product_name}"
+                url = self._build_url()
                 last_offset = params.get("Skip", 0)
                 response = self.linked_service.connection.get(url, headers=self.linked_service.settings.headers, params=params)
                 response.raise_for_status()
@@ -320,16 +354,19 @@ class VieriDataset(
         """
         Create (insert) new records in Vieri via POST request.
 
-        Uses data from self.input (provided by the caller) and POSTs it to the Vieri write endpoint.
+        Uses data from self.input (provided by the caller) and POSTs it to the Vieri endpoint.
         Populates self.output with affected rows (backend response or copy of self.input).
         Empty input is a no-op and returns immediately.
+
+        For dataloader API, requires write_endpoint configuration.
+        For IVAR API, uses product_name as endpoint.
 
         Raises:
             CreateError: If the write operation fails (including if the API doesn't support writes).
         """
-        # Check if write_endpoint is configured
-        if not self.settings.create.write_endpoint:
-            raise NotSupportedError("Write operations not supported: write_endpoint is not configured")
+        # Check if operation is supported for this API type
+        if self.settings.api_type == VieriApiType.DATALOADER and not self.settings.create.write_endpoint:
+            raise NotSupportedError("Write operations not supported: write_endpoint is not configured for dataloader API")
 
         if self.input is None or self.input.empty:
             logger.info("create() called with empty input, returning immediately (no-op)")
@@ -337,14 +374,18 @@ class VieriDataset(
             return
 
         logger.info(
-            "Starting create operation for VieriDataset with product_name=%s, records=%d",
+            "Starting create operation for VieriDataset with api_type=%s, product_name=%s, records=%d",
+            self.settings.api_type,
             self.settings.product_name,
             len(self.input),
         )
 
         try:
-            # Build write endpoint URL
-            url = f"{self.linked_service.settings.host}/{self.settings.create.write_endpoint}"
+            # Build URL based on API type
+            if self.settings.api_type == VieriApiType.DATALOADER:
+                url = f"{self.linked_service.settings.host}/{self.settings.create.write_endpoint}"
+            else:  # IVAR API
+                url = self._build_url()
 
             # Convert DataFrame to list of dicts for JSON payload
             records = self.input.to_dict(orient="records")
@@ -365,21 +406,21 @@ class VieriDataset(
             response.raise_for_status()
 
             logger.info(
-                "Successfully created %d records in Vieri for product_name=%s",
+                "Successfully created %d records in Vieri (api_type=%s, product_name=%s)",
                 len(records),
+                self.settings.api_type,
                 self.settings.product_name,
             )
 
             # The API returns 200 on success; populate output with input records
             self.output = self.input.copy()
 
-        except NotSupportedError:
-            raise
         except Exception as exc:
             logger.error("Error during create operation: %s", exc)
             raise CreateError(
                 message=f"Failed to create records in Vieri API: {exc}",
                 details={
+                    "api_type": self.settings.api_type,
                     "product_name": self.settings.product_name,
                     "records_count": len(self.input),
                 },
@@ -387,21 +428,141 @@ class VieriDataset(
 
     def update(self) -> None:
         """
-        Update is not supported by the Vieri provider.
+        Update existing records in Vieri via POST request (IVAR API only).
+
+        Uses data from self.input (provided by the caller) and POSTs it to the IVAR update endpoint.
+        Populates self.output with affected rows (copy of self.input on success).
+        Empty input is a no-op and returns immediately.
+
+        Note: Only supported for IVAR API. Dataloader API does not support updates.
 
         Raises:
-            NotSupportedError: Update operations are not available.
+            NotSupportedError: If called on dataloader API or if input is empty.
+            UpdateError: If the update operation fails.
         """
-        raise NotSupportedError("Method (update) not supported by Vieri provider.")
+        # Check if operation is supported for this API type
+        if self.settings.api_type != VieriApiType.IVAR:
+            raise NotSupportedError(f"Update operations are only supported for 'ivar' API type, not '{self.settings.api_type}'")
+
+        if self.input is None or self.input.empty:
+            logger.info("update() called with empty input, returning immediately (no-op)")
+            self.output = pd.DataFrame()
+            return
+
+        logger.info(
+            "Starting update operation for VieriDataset with product_name=%s, records=%d",
+            self.settings.product_name,
+            len(self.input),
+        )
+
+        try:
+            url = self._build_url()
+
+            # Convert DataFrame to list of dicts for JSON payload
+            records = self.input.to_dict(orient="records")
+            payload = {"Records": records}
+
+            logger.debug(
+                "POSTing %d records to Vieri update endpoint: %s",
+                len(records),
+                url,
+            )
+
+            # Send POST request
+            response = self.linked_service.connection.post(
+                url,
+                json=payload,
+                headers=self.linked_service.settings.headers,
+            )
+            response.raise_for_status()
+
+            logger.info(
+                "Successfully updated %d records in Vieri for product_name=%s",
+                len(records),
+                self.settings.product_name,
+            )
+
+            # The API returns 200 on success; populate output with input records
+            self.output = self.input.copy()
+
+        except Exception as exc:
+            logger.error("Error during update operation: %s", exc)
+            raise UpdateError(
+                message=f"Failed to update records in Vieri API: {exc}",
+                details={
+                    "product_name": self.settings.product_name,
+                    "records_count": len(self.input),
+                },
+            ) from exc
 
     def delete(self) -> None:
         """
-        Delete is not supported by the Vieri provider.
+        Delete existing records in Vieri via DELETE request (IVAR API only).
+
+        Uses data from self.input (provided by the caller) and sends a DELETE request to the IVAR endpoint.
+        Populates self.output with affected rows (copy of self.input on success).
+        Empty input is a no-op and returns immediately.
+
+        Note: Only supported for IVAR API. Dataloader API does not support deletes.
 
         Raises:
-            NotSupportedError: Delete operations are not available.
+            NotSupportedError: If called on dataloader API or if input is empty.
+            DeleteError: If the delete operation fails.
         """
-        raise NotSupportedError("Method (delete) not supported by Vieri provider.")
+        # Check if operation is supported for this API type
+        if self.settings.api_type != VieriApiType.IVAR:
+            raise NotSupportedError(f"Delete operations are only supported for 'ivar' API type, not '{self.settings.api_type}'")
+
+        if self.input is None or self.input.empty:
+            logger.info("delete() called with empty input, returning immediately (no-op)")
+            self.output = pd.DataFrame()
+            return
+
+        logger.info(
+            "Starting delete operation for VieriDataset with product_name=%s, records=%d",
+            self.settings.product_name,
+            len(self.input),
+        )
+
+        try:
+            url = self._build_url()
+
+            # Convert DataFrame to list of dicts for JSON payload
+            records = self.input.to_dict(orient="records")
+            payload = {"Records": records}
+
+            logger.debug(
+                "DELETing %d records from Vieri endpoint: %s",
+                len(records),
+                url,
+            )
+
+            # Send DELETE request
+            response = self.linked_service.connection.delete(
+                url,
+                json=payload,
+                headers=self.linked_service.settings.headers,
+            )
+            response.raise_for_status()
+
+            logger.info(
+                "Successfully deleted %d records from Vieri for product_name=%s",
+                len(records),
+                self.settings.product_name,
+            )
+
+            # The API returns 200 on success; populate output with input records
+            self.output = self.input.copy()
+
+        except Exception as exc:
+            logger.error("Error during delete operation: %s", exc)
+            raise DeleteError(
+                message=f"Failed to delete records in Vieri API: {exc}",
+                details={
+                    "product_name": self.settings.product_name,
+                    "records_count": len(self.input),
+                },
+            ) from exc
 
     def close(self) -> None:
         """
@@ -427,3 +588,10 @@ class VieriDataset(
     def purge(self) -> None:
         """Purge is not supported by Vieri provider."""
         raise NotSupportedError("Method (purge) not supported by Vieri provider.")
+
+    def _build_url(self) -> str:
+        """Build the API URL based on api_type and product_name."""
+        if self.settings.api_type == VieriApiType.IVAR:
+            return f"{self.linked_service.settings.host}/ivar/api/public/{self.settings.product_name}"
+        else:  # VieriApiType.DATALOADER
+            return f"{self.linked_service.settings.host}/vieri-dataloader/{self.settings.product_name}"

@@ -1,4 +1,4 @@
-"""Unit tests for VieriDataset with checkpoint support."""
+"""Unit tests for VieriDataset with checkpoint support and API type variants."""
 
 import logging
 from datetime import datetime
@@ -7,11 +7,21 @@ from uuid import uuid4
 
 import pandas as pd
 import pytest
-from ds_resource_plugin_py_lib.common.resource.dataset.errors import CreateError, ReadError
+from ds_resource_plugin_py_lib.common.resource.dataset.errors import (
+    CreateError,
+    DeleteError,
+    ReadError,
+    UpdateError,
+)
 from ds_resource_plugin_py_lib.common.resource.errors import NotSupportedError
 
-from ds_provider_vieri_py_lib.dataset.vieri import VieriDataset, VieriDatasetSettings, VieriReadSettings
-from ds_provider_vieri_py_lib.enums import ResourceType
+from ds_provider_vieri_py_lib.dataset.vieri import (
+    VieriCreateSettings,
+    VieriDataset,
+    VieriDatasetSettings,
+    VieriReadSettings,
+)
+from ds_provider_vieri_py_lib.enums import ResourceType, VieriApiType
 from ds_provider_vieri_py_lib.linked_service.vieri import VieriLinkedService, VieriLinkedServiceSettings
 
 
@@ -30,7 +40,7 @@ def mock_linked_service():
 def vieri_settings():
     """Default VieriDatasetSettings for testing."""
     return VieriDatasetSettings(
-        owner_id="test_owner",
+        api_type=VieriApiType.IVAR,
         product_name="test_product",
         read=VieriReadSettings(
             page_size=20,
@@ -89,13 +99,6 @@ class TestVieriDatasetBasics:
         with pytest.raises(NotSupportedError):
             vieri_dataset.purge()
 
-    def test_create_not_supported_without_endpoint(self, vieri_dataset):
-        """Test that create raises NotSupportedError when write_endpoint is not configured."""
-        # write_endpoint is None by default
-        vieri_dataset.input = pd.DataFrame({"id": [1, 2], "name": ["a", "b"]})
-        with pytest.raises(NotSupportedError, match="Write operations not supported"):
-            vieri_dataset.create()
-
     def test_create_empty_input_is_noop(self, vieri_dataset, caplog):
         """Test that create with empty input returns immediately (no-op per contract)."""
         caplog.set_level(logging.INFO)
@@ -121,47 +124,9 @@ class TestVieriDatasetBasics:
         assert "empty input" in caplog.text
         vieri_dataset.linked_service.connection.post.assert_not_called()
 
-    def test_create_success_with_input(self, vieri_dataset, caplog):
-        """Test successful create operation with records from self.input."""
-        caplog.set_level(logging.INFO)
-        test_records = {"id": [1, 2], "name": ["John", "Jane"]}
-        vieri_dataset.input = pd.DataFrame(test_records)
-        vieri_dataset.settings.create.write_endpoint = "vieri-dataloader/LoadAccounts"
-
-        # Mock successful POST response
-        mock_response = MagicMock()
-        mock_response.raise_for_status.return_value = None
-        vieri_dataset.linked_service.connection.post.return_value = mock_response
-
-        vieri_dataset.create()
-
-        # Verify POST was called with correct parameters
-        vieri_dataset.linked_service.connection.post.assert_called_once()
-        call_args = vieri_dataset.linked_service.connection.post.call_args
-        assert "vieri-dataloader/LoadAccounts" in call_args.args[0]
-        assert call_args.kwargs["json"]["Records"] == [{"id": 1, "name": "John"}, {"id": 2, "name": "Jane"}]
-        # Verify output is populated with copy of input
-        assert len(vieri_dataset.output) == 2
-        assert "Successfully created 2 records" in caplog.text
-
-    def test_create_with_different_endpoint(self, vieri_dataset):
-        """Test create with different write endpoints."""
-        vieri_dataset.input = pd.DataFrame({"id": [1], "name": ["Test"]})
-        vieri_dataset.settings.create.write_endpoint = "vieri-dataloader/LoadSuppliers"
-
-        mock_response = MagicMock()
-        mock_response.raise_for_status.return_value = None
-        vieri_dataset.linked_service.connection.post.return_value = mock_response
-
-        vieri_dataset.create()
-
-        call_args = vieri_dataset.linked_service.connection.post.call_args
-        assert "vieri-dataloader/LoadSuppliers" in call_args.args[0]
-
     def test_create_api_failure(self, vieri_dataset):
         """Test create operation when API returns error."""
         vieri_dataset.input = pd.DataFrame({"id": [1], "name": ["Test"]})
-        vieri_dataset.settings.create.write_endpoint = "vieri-dataloader/LoadAccounts"
 
         # Mock POST response that raises an error
         mock_response = MagicMock()
@@ -170,16 +135,6 @@ class TestVieriDatasetBasics:
 
         with pytest.raises(CreateError, match="Failed to create records"):
             vieri_dataset.create()
-
-    def test_update_not_supported(self, vieri_dataset):
-        """Test that update raises NotSupportedError."""
-        with pytest.raises(NotSupportedError):
-            vieri_dataset.update()
-
-    def test_delete_not_supported(self, vieri_dataset):
-        """Test that delete raises NotSupportedError."""
-        with pytest.raises(NotSupportedError):
-            vieri_dataset.delete()
 
 
 class TestBuildRequestParams:
@@ -439,3 +394,424 @@ class TestDateFormatting:
         result = vieri_dataset.format_vieri_date(dt)
 
         assert result == "2024-03-15"
+
+
+@pytest.fixture
+def mock_linked_service_clean():
+    """Clean mock linked service without vieri_settings dependency."""
+    settings = VieriLinkedServiceSettings(host="https://api.vieri.com", subscription_key="test_key")
+    svc = VieriLinkedService(id=uuid4(), name="test_service", version="1.0.0", settings=settings)
+    with patch.object(type(svc), "connection", new_callable=PropertyMock) as mock_conn:
+        mock_conn.return_value = MagicMock()
+        yield svc
+
+
+class TestVieriApiTypeSettings:
+    """Test VieriDatasetSettings with different API types."""
+
+    def test_api_type_enum_values(self):
+        """Test VieriApiType enum has correct values."""
+        assert VieriApiType.IVAR == "ivar"
+        assert VieriApiType.DATALOADER == "dataloader"
+
+    def test_settings_ivar_api_type_auto_populates_owner_id(self):
+        """Test that IVAR api_type auto-populates owner_id to 'ivar'."""
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.IVAR,
+            product_name="Accounts",
+        )
+        assert settings.owner_id == "ivar"
+        assert settings.api_type == VieriApiType.IVAR
+
+    def test_settings_dataloader_api_type_auto_populates_owner_id(self):
+        """Test that dataloader api_type auto-populates owner_id to 'vieri-dataloader'."""
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.DATALOADER,
+            product_name="LoadAccounts",
+        )
+        assert settings.owner_id == "vieri-dataloader"
+        assert settings.api_type == VieriApiType.DATALOADER
+
+    def test_settings_can_use_string_values(self):
+        """Test that settings can be initialized with string enum values."""
+        settings = VieriDatasetSettings(
+            api_type="ivar",
+            product_name="Accounts",
+        )
+        assert settings.owner_id == "ivar"
+
+    def test_settings_read_and_create_defaults(self):
+        """Test that read and create settings have proper defaults."""
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.IVAR,
+            product_name="Accounts",
+        )
+        assert isinstance(settings.read, VieriReadSettings)
+        assert settings.read.page_size == 20
+        assert settings.read.offset == 0
+        assert isinstance(settings.create, VieriCreateSettings)
+        assert settings.create.write_endpoint is None
+
+
+class TestBuildUrl:
+    """Test _build_url method for both API types."""
+
+    def test_build_url_ivar_api(self, mock_linked_service_clean):
+        """Test URL building for IVAR API."""
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.IVAR,
+            product_name="Accounts",
+        )
+        dataset = VieriDataset(
+            id=uuid4(),
+            name="test_dataset",
+            version="1.0.0",
+            linked_service=mock_linked_service_clean,
+            settings=settings,
+        )
+
+        url = dataset._build_url()
+
+        assert url == "https://api.vieri.com/ivar/api/public/Accounts"
+
+    def test_build_url_dataloader_api(self, mock_linked_service_clean):
+        """Test URL building for Dataloader API."""
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.DATALOADER,
+            product_name="LoadAccounts",
+        )
+        dataset = VieriDataset(
+            id=uuid4(),
+            name="test_dataset",
+            version="1.0.0",
+            linked_service=mock_linked_service_clean,
+            settings=settings,
+        )
+
+        url = dataset._build_url()
+
+        assert url == "https://api.vieri.com/vieri-dataloader/LoadAccounts"
+
+    def test_build_url_ivar_with_different_product_name(self, mock_linked_service_clean):
+        """Test URL building with different product names."""
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.IVAR,
+            product_name="Contacts",
+        )
+        dataset = VieriDataset(
+            id=uuid4(),
+            name="test_dataset",
+            version="1.0.0",
+            linked_service=mock_linked_service_clean,
+            settings=settings,
+        )
+
+        url = dataset._build_url()
+
+        assert url == "https://api.vieri.com/ivar/api/public/Contacts"
+
+
+class TestCreateWithApiTypes:
+    """Test create() method with both IVAR and Dataloader APIs."""
+
+    def test_create_ivar_api_success(self, mock_linked_service_clean, caplog):
+        """Test successful create operation on IVAR API."""
+        caplog.set_level(logging.INFO)
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.IVAR,
+            product_name="Accounts",
+        )
+        dataset = VieriDataset(
+            id=uuid4(),
+            name="test_dataset",
+            version="1.0.0",
+            linked_service=mock_linked_service_clean,
+            settings=settings,
+        )
+        dataset.input = pd.DataFrame({"id": [1, 2], "name": ["Account A", "Account B"]})
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        dataset.linked_service.connection.post.return_value = mock_response
+
+        dataset.create()
+
+        call_args = dataset.linked_service.connection.post.call_args
+        assert "ivar/api/public/Accounts" in call_args.args[0]
+        assert len(dataset.output) == 2
+        assert "Successfully created 2 records" in caplog.text
+
+    def test_create_dataloader_api_success(self, mock_linked_service_clean, caplog):
+        """Test successful create operation on Dataloader API."""
+        caplog.set_level(logging.INFO)
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.DATALOADER,
+            product_name="LoadAccounts",
+            create=VieriCreateSettings(write_endpoint="vieri-dataloader/LoadAccounts"),
+        )
+        dataset = VieriDataset(
+            id=uuid4(),
+            name="test_dataset",
+            version="1.0.0",
+            linked_service=mock_linked_service_clean,
+            settings=settings,
+        )
+        dataset.input = pd.DataFrame({"id": [1], "name": ["Company A"]})
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        dataset.linked_service.connection.post.return_value = mock_response
+
+        dataset.create()
+
+        call_args = dataset.linked_service.connection.post.call_args
+        assert "vieri-dataloader/LoadAccounts" in call_args.args[0]
+        assert len(dataset.output) == 1
+
+    def test_create_dataloader_without_write_endpoint_raises(self, mock_linked_service_clean):
+        """Test that create on Dataloader without write_endpoint raises NotSupportedError."""
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.DATALOADER,
+            product_name="LoadAccounts",
+        )
+        dataset = VieriDataset(
+            id=uuid4(),
+            name="test_dataset",
+            version="1.0.0",
+            linked_service=mock_linked_service_clean,
+            settings=settings,
+        )
+        dataset.input = pd.DataFrame({"id": [1]})
+
+        with pytest.raises(NotSupportedError, match="write_endpoint is not configured"):
+            dataset.create()
+
+    def test_create_ivar_api_error_handling(self, mock_linked_service_clean):
+        """Test error handling for create on IVAR API."""
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.IVAR,
+            product_name="Accounts",
+        )
+        dataset = VieriDataset(
+            id=uuid4(),
+            name="test_dataset",
+            version="1.0.0",
+            linked_service=mock_linked_service_clean,
+            settings=settings,
+        )
+        dataset.input = pd.DataFrame({"id": [1]})
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.side_effect = Exception("API returned 500")
+        dataset.linked_service.connection.post.return_value = mock_response
+
+        with pytest.raises(CreateError, match="Failed to create records"):
+            dataset.create()
+
+    def test_create_empty_input_ivar(self, mock_linked_service_clean, caplog):
+        """Test that create with empty input is a no-op for IVAR API."""
+        caplog.set_level(logging.INFO)
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.IVAR,
+            product_name="Accounts",
+        )
+        dataset = VieriDataset(
+            id=uuid4(),
+            name="test_dataset",
+            version="1.0.0",
+            linked_service=mock_linked_service_clean,
+            settings=settings,
+        )
+        dataset.input = pd.DataFrame()
+
+        dataset.create()
+
+        assert dataset.output.empty
+        assert "empty input, returning immediately" in caplog.text
+        dataset.linked_service.connection.post.assert_not_called()
+
+
+class TestUpdateMethod:
+    """Test update() method for IVAR API only."""
+
+    def test_update_ivar_api_success(self, mock_linked_service_clean, caplog):
+        """Test successful update operation on IVAR API."""
+        caplog.set_level(logging.INFO)
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.IVAR,
+            product_name="Accounts",
+        )
+        dataset = VieriDataset(
+            id=uuid4(),
+            name="test_dataset",
+            version="1.0.0",
+            linked_service=mock_linked_service_clean,
+            settings=settings,
+        )
+        dataset.input = pd.DataFrame({"id": [1, 2], "name": ["Updated A", "Updated B"]})
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        dataset.linked_service.connection.post.return_value = mock_response
+
+        dataset.update()
+
+        call_args = dataset.linked_service.connection.post.call_args
+        assert "ivar/api/public/Accounts" in call_args.args[0]
+        assert len(dataset.output) == 2
+        assert "Successfully updated 2 records" in caplog.text
+
+    def test_update_dataloader_api_raises_not_supported(self, mock_linked_service_clean):
+        """Test that update on Dataloader API raises NotSupportedError."""
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.DATALOADER,
+            product_name="LoadAccounts",
+        )
+        dataset = VieriDataset(
+            id=uuid4(),
+            name="test_dataset",
+            version="1.0.0",
+            linked_service=mock_linked_service_clean,
+            settings=settings,
+        )
+        dataset.input = pd.DataFrame({"id": [1]})
+
+        with pytest.raises(NotSupportedError, match="Update operations are only supported for 'ivar' API type"):
+            dataset.update()
+
+    def test_update_empty_input_ivar(self, mock_linked_service_clean, caplog):
+        """Test that update with empty input is a no-op for IVAR API."""
+        caplog.set_level(logging.INFO)
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.IVAR,
+            product_name="Accounts",
+        )
+        dataset = VieriDataset(
+            id=uuid4(),
+            name="test_dataset",
+            version="1.0.0",
+            linked_service=mock_linked_service_clean,
+            settings=settings,
+        )
+        dataset.input = pd.DataFrame()
+
+        dataset.update()
+
+        assert dataset.output.empty
+        assert "empty input, returning immediately" in caplog.text
+        dataset.linked_service.connection.post.assert_not_called()
+
+    def test_update_api_error_handling(self, mock_linked_service_clean):
+        """Test error handling for update on IVAR API."""
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.IVAR,
+            product_name="Accounts",
+        )
+        dataset = VieriDataset(
+            id=uuid4(),
+            name="test_dataset",
+            version="1.0.0",
+            linked_service=mock_linked_service_clean,
+            settings=settings,
+        )
+        dataset.input = pd.DataFrame({"id": [1], "name": ["Updated"]})
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.side_effect = Exception("API returned 400 Bad Request")
+        dataset.linked_service.connection.post.return_value = mock_response
+
+        with pytest.raises(UpdateError, match="Failed to update records"):
+            dataset.update()
+
+
+class TestDeleteMethod:
+    """Test delete() method for IVAR API only."""
+
+    def test_delete_ivar_api_success(self, mock_linked_service_clean, caplog):
+        """Test successful delete operation on IVAR API."""
+        caplog.set_level(logging.INFO)
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.IVAR,
+            product_name="Accounts",
+        )
+        dataset = VieriDataset(
+            id=uuid4(),
+            name="test_dataset",
+            version="1.0.0",
+            linked_service=mock_linked_service_clean,
+            settings=settings,
+        )
+        dataset.input = pd.DataFrame({"id": [1, 2]})
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        dataset.linked_service.connection.delete.return_value = mock_response
+
+        dataset.delete()
+
+        call_args = dataset.linked_service.connection.delete.call_args
+        assert "ivar/api/public/Accounts" in call_args.args[0]
+        assert len(dataset.output) == 2
+        assert "Successfully deleted 2 records" in caplog.text
+
+    def test_delete_dataloader_api_raises_not_supported(self, mock_linked_service_clean):
+        """Test that delete on Dataloader API raises NotSupportedError."""
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.DATALOADER,
+            product_name="LoadAccounts",
+        )
+        dataset = VieriDataset(
+            id=uuid4(),
+            name="test_dataset",
+            version="1.0.0",
+            linked_service=mock_linked_service_clean,
+            settings=settings,
+        )
+        dataset.input = pd.DataFrame({"id": [1]})
+
+        with pytest.raises(NotSupportedError, match="Delete operations are only supported for 'ivar' API type"):
+            dataset.delete()
+
+    def test_delete_empty_input_ivar(self, mock_linked_service_clean, caplog):
+        """Test that delete with empty input is a no-op for IVAR API."""
+        caplog.set_level(logging.INFO)
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.IVAR,
+            product_name="Accounts",
+        )
+        dataset = VieriDataset(
+            id=uuid4(),
+            name="test_dataset",
+            version="1.0.0",
+            linked_service=mock_linked_service_clean,
+            settings=settings,
+        )
+        dataset.input = pd.DataFrame()
+
+        dataset.delete()
+
+        assert dataset.output.empty
+        assert "empty input, returning immediately" in caplog.text
+        dataset.linked_service.connection.delete.assert_not_called()
+
+    def test_delete_api_error_handling(self, mock_linked_service_clean):
+        """Test error handling for delete on IVAR API."""
+        settings = VieriDatasetSettings(
+            api_type=VieriApiType.IVAR,
+            product_name="Accounts",
+        )
+        dataset = VieriDataset(
+            id=uuid4(),
+            name="test_dataset",
+            version="1.0.0",
+            linked_service=mock_linked_service_clean,
+            settings=settings,
+        )
+        dataset.input = pd.DataFrame({"id": [999]})
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.side_effect = Exception("API returned 404 Not Found")
+        dataset.linked_service.connection.delete.return_value = mock_response
+
+        with pytest.raises(DeleteError, match="Failed to delete records"):
+            dataset.delete()
