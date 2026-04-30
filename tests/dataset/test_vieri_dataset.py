@@ -192,7 +192,7 @@ class TestBuildAndSetCheckpoint:
         vieri_dataset.settings.read.page_size = 20
         vieri_dataset.settings.read.last_modified = "2024-01-01"
 
-        vieri_dataset._build_checkpoint(last_offset=60, final_page_count=20)
+        vieri_dataset._build_checkpoint(initial_offset=60, total_records_retrieved=20)
 
         assert vieri_dataset.checkpoint["offset"] == 80
         assert vieri_dataset.checkpoint["last_modified"] == "2024-01-01"
@@ -202,7 +202,7 @@ class TestBuildAndSetCheckpoint:
         vieri_dataset.settings.read.page_size = 25
         vieri_dataset.settings.read.last_modified = None
 
-        vieri_dataset._build_checkpoint(last_offset=50, final_page_count=25)
+        vieri_dataset._build_checkpoint(initial_offset=50, total_records_retrieved=25)
 
         assert vieri_dataset.checkpoint["offset"] == 75
 
@@ -217,7 +217,7 @@ class TestBuildAndSetCheckpoint:
         vieri_dataset.checkpoint = {"last_modified": "invalid-date"}
 
         # Should not raise even though the date is invalid
-        vieri_dataset._build_checkpoint(last_offset=100, final_page_count=10)
+        vieri_dataset._build_checkpoint(initial_offset=100, total_records_retrieved=10)
 
         # Verify checkpoint was updated with new offset
         assert vieri_dataset.checkpoint["offset"] == 110
@@ -231,7 +231,7 @@ class TestBuildAndSetCheckpoint:
         # Settings has a different date (should be ignored in incremental load)
         vieri_dataset.settings.read.last_modified = "2024-01-01"
 
-        vieri_dataset._build_checkpoint(last_offset=50, final_page_count=20)
+        vieri_dataset._build_checkpoint(initial_offset=50, total_records_retrieved=20)
 
         # Checkpoint's last_modified should be preserved
         assert vieri_dataset.checkpoint["last_modified"] == "2024-02-15"

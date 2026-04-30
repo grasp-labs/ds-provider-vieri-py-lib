@@ -191,21 +191,19 @@ class VieriDataset(
             self.settings.product_name,
         )
         all_results: list[dict[str, Any]] = []
-        last_offset: int = 0
-        final_page_count: int = 0
-
-        params = self._build_request_params()
+        initial_offset: int = 0
 
         try:
+            params = self._build_request_params()
+            initial_offset = params.get("Skip", 0)
+
             while True:
                 url = self._build_url()
-                last_offset = params.get("Skip", 0)
                 response = self.linked_service.connection.get(url, headers=self.linked_service.settings.headers, params=params)
                 response.raise_for_status()
 
                 data = response.json()
 
-                # Validate response structure: expect dict with "Results" key containing a list
                 if not isinstance(data, dict):
                     raise ReadError(
                         message=f"Invalid Vieri API response: expected dict, got {type(data).__name__}",
@@ -220,7 +218,6 @@ class VieriDataset(
 
                 results = data["Results"]
 
-                # Validate that Results is a list
                 if not isinstance(results, list):
                     raise ReadError(
                         message=f"Invalid Vieri API response: 'Results' is {type(results).__name__}, expected list",
@@ -230,11 +227,9 @@ class VieriDataset(
                 if not results:
                     break
 
-                # Track count of records in this batch
+                # Track count of records in this batch and add to results
                 batch_count = len(results)
                 all_results.extend(results)
-                last_offset = params.get("Skip", 0)
-                final_page_count = batch_count  # Update for checkpoint calculation
 
                 # Check if we got less results than requested (last page)
                 if batch_count < params.get("Take", 0):
@@ -255,7 +250,7 @@ class VieriDataset(
         finally:
             # Always populate output and checkpoint, even with partial results
             self.output = pd.DataFrame(all_results)
-            self._build_checkpoint(last_offset, final_page_count)
+            self._build_checkpoint(initial_offset, len(all_results))
 
     def _build_request_params(self) -> dict[str, Any]:
         """
@@ -297,18 +292,19 @@ class VieriDataset(
 
         return params
 
-    def _build_checkpoint(self, last_offset: int, final_page_count: int) -> None:
+    def _build_checkpoint(self, initial_offset: int, total_records_retrieved: int) -> None:
         """
         Build and set the checkpoint dict with pagination state.
 
-        Saves the last offset to enable resuming from this exact position
-        on the next incremental load.
+        Saves the next offset to enable resuming from this exact position on the next incremental load.
+        The offset is computed from the initial offset + total records successfully retrieved,
+        ensuring we never skip data even if a later page fails during parsing or validation.
 
         Non-raising: safely reads last_modified from checkpoint/settings without validation
         to avoid masking exceptions when called from finally blocks.
 
-        :param last_offset: The last Skip offset value that was successfully fetched.
-        :param final_page_count: The actual number of records in the final batch (for accurate offset).
+        :param initial_offset: The starting Skip offset for this read operation.
+        :param total_records_retrieved: The total number of records successfully retrieved and parsed.
         """
         if not self.supports_checkpoint:
             return
@@ -325,9 +321,7 @@ class VieriDataset(
             # Checkpoint last_modified takes precedence (narrowed from settings scope)
             last_modified = self.checkpoint.get("last_modified", self.settings.read.last_modified)
 
-        # Update offset for pagination persistence using actual record count from final batch
-        # This prevents overshooting on partial/last pages
-        self.checkpoint["offset"] = last_offset + final_page_count
+        self.checkpoint["offset"] = initial_offset + total_records_retrieved
 
         # Preserve last_modified in checkpoint if it exists (for incremental resumption)
         if last_modified:
