@@ -4,9 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ds-provider-vieri-py-lib"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 description = "A Python package from the DS library collection"
-dependencies = []
+dependencies = [
+    "ds-common-logger-py-lib>=0.1.0-alpha.6,<1.0.0",
+    "ds-protocol-http-py-lib>=0.1.0-beta.6,<1.0.0",
+    "ds-resource-plugin-py-lib>=0.1.0-rc.3,<1.0.0",
+    "pandas>=2.2.0,<3.0.0",
+]
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE-APACHE"]
@@ -35,6 +40,9 @@ Repository = "https://github.com/grasp-labs/ds-provider-vieri-py-lib/"
 Issues = "https://github.com/grasp-labs/ds-provider-vieri-py-lib/issues/"
 Changelog = "https://github.com/grasp-labs/ds-provider-vieri-py-lib/releases"
 
+[project.entry-points."ds.providers"]
+vieri = "ds_provider_vieri_py_lib"
+
 [project.optional-dependencies]
 dev = [
     "ruff>=0.1.8",
@@ -49,6 +57,7 @@ dev = [
     "sphinx-autoapi>=3.0.0",
     "sphinx-material>=0.0.35",
     "bandit>=1.7.0",
+    "pandas-stubs>=2.2.0.240218",
 ]
 test = [
     "pytest>=7.4.0",
@@ -65,7 +74,7 @@ docs = [
 include-package-data = true
 
 [tool.setuptools.package-data]
-ds_provider_vieri_py_lib = ["py.typed"]
+ds_provider_vieri_py_lib = ["py.typed", "resource.yaml"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
